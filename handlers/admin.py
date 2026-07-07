@@ -19,7 +19,8 @@ from database import (
     get_tournament_standings, delete_tournament, update_tournament_message_id,
     set_setting, get_setting, get_chat_id,
     track_chat_member, get_chat_members,
-    add_reminder, delete_reminder
+    add_reminder, delete_reminder,
+    auto_generate_bracket
 )
 
 router = Router()
@@ -1864,6 +1865,7 @@ async def tournament_details(callback: CallbackQuery):
         kb_buttons.append([InlineKeyboardButton(text="Начать турнир", callback_data=f"start_tournament_{tournament_id}")])
         kb_buttons.append([InlineKeyboardButton(text="Удалить", callback_data=f"delete_tournament_{tournament_id}")])
     elif tournament['status'] == 'in_progress':
+        kb_buttons.append([InlineKeyboardButton(text="Автосетка", callback_data=f"auto_bracket_{tournament_id}")])
         kb_buttons.append([InlineKeyboardButton(text="Создать поединок", callback_data=f"create_match_{tournament_id}")])
         kb_buttons.append([InlineKeyboardButton(text="Результаты", callback_data=f"match_list_{tournament_id}")])
         kb_buttons.append([InlineKeyboardButton(text="Сетка", callback_data=f"standings_{tournament_id}")])
@@ -1872,6 +1874,51 @@ async def tournament_details(callback: CallbackQuery):
     kb_buttons.append([InlineKeyboardButton(text="Назад", callback_data="list_tournaments")])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
     await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("auto_bracket_"))
+async def auto_bracket_handler(callback: CallbackQuery, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    chat_id = await get_chat_id()
+    if not chat_id:
+        await callback.message.answer("Сначала настройте чат командой /setchat в группе!")
+        await callback.answer()
+        return
+
+    tournament_id = int(callback.data.split("_")[2])
+
+    from database import auto_generate_bracket
+    matches, error = await auto_generate_bracket(tournament_id)
+
+    if error:
+        await callback.message.answer(error)
+        await callback.answer()
+        return
+
+    participants = await get_tournament_participants(tournament_id)
+    tournament = await get_tournament(tournament_id)
+
+    text = f"Сетка турнира \"{tournament['name']}\" (автоматическая):\n\n"
+    text += "Раунд 1:\n"
+
+    for i in range(0, len(participants) - 1, 2):
+        p1 = participants[i]
+        p2 = participants[i + 1]
+        name1 = p1['display_name'] or str(p1['user_id'])
+        name2 = p2['display_name'] or str(p2['user_id'])
+        text += f"  {name1} vs {name2}\n"
+
+    if len(participants) % 2 == 1:
+        last = participants[-1]
+        name = last['display_name'] or str(last['user_id'])
+        text += f"\n  {name} —自动 ( bye )\n"
+
+    await bot.send_message(chat_id=chat_id, text=text)
+    await callback.message.answer("Сетка создана и опубликована!")
     await callback.answer()
 
 

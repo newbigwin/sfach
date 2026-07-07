@@ -812,6 +812,30 @@ async def create_match(tournament_id, player1_id, player2_id, round_num, match_n
         return cursor.lastrowid
 
 
+async def auto_generate_bracket(tournament_id):
+    participants = await get_tournament_participants(tournament_id)
+    if len(participants) < 2:
+        return None, "Недостаточно участников"
+
+    sorted_players = sorted(participants, key=lambda p: p['elo'] if 'elo' in p.keys() else 1000, reverse=True)
+
+    matches_created = []
+    round_num = 1
+
+    for i in range(0, len(sorted_players) - 1, 2):
+        match_num = (i // 2) + 1
+        match_id = await create_match(
+            tournament_id=tournament_id,
+            player1_id=sorted_players[i]['user_id'],
+            player2_id=sorted_players[i + 1]['user_id'],
+            round_num=round_num,
+            match_num=match_num
+        )
+        matches_created.append(match_id)
+
+    return matches_created, None
+
+
 async def get_match(match_id):
     async with aiosqlite.connect(DB_NAME) as db:
         db.row_factory = aiosqlite.Row
