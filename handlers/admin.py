@@ -2225,7 +2225,7 @@ async def list_tournaments(callback: CallbackQuery):
         kb_buttons.append([
             InlineKeyboardButton(
                 text=f"{t['name']} ({count}/{t['max_participants']})",
-                callback_data=f"tournament_{t['id']}"
+                callback_data=f"tournament_details_{t['id']}"
             )
         ])
 
