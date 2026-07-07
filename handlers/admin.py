@@ -22,6 +22,7 @@ from database import (
     add_reminder, delete_reminder,
     auto_generate_bracket,
     create_recurring_event, get_recurring_events, delete_recurring_event,
+    update_recurring_event, get_recurring_event,
     resolve_bets, get_match_bets, add_quiz,
     get_all_known_users, get_known_users_count,
     get_bot_stats, get_tournament_analytics, get_match_stats
@@ -210,6 +211,24 @@ async def recurring_events_menu(callback: CallbackQuery):
     await callback.answer()
 
 
+class CreateRecurringEvent(StatesGroup):
+    title = State()
+    description = State()
+    photo = State()
+    day_of_week = State()
+    time = State()
+    confirm = State()
+
+
+class EditRecurringEvent(StatesGroup):
+    choose_field = State()
+    edit_title = State()
+    edit_desc = State()
+    edit_photo = State()
+    edit_day = State()
+    edit_time = State()
+
+
 @router.callback_query(F.data == "create_recurring")
 async def create_recurring_start(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
@@ -238,6 +257,19 @@ async def recurring_desc(message: Message, state: FSMContext):
 
     desc = message.text if message.text.lower() != "пропустить" else ""
     await state.update_data(description=desc)
+    await message.answer("Отправьте фото для события (или 'пропустить'):")
+    await state.set_state(CreateRecurringEvent.photo)
+
+
+@router.message(CreateRecurringEvent.photo)
+async def recurring_photo(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    if message.photo:
+        await state.update_data(photo=message.photo[-1].file_id)
+    else:
+        await state.update_data(photo=None)
 
     days = "0 - Пн, 1 - Вт, 2 - Ср, 3 - Чт, 4 - Пт, 5 - Сб, 6 - Вс"
     await message.answer(f"День недели:\n{days}\n\nВведите число:")
@@ -284,6 +316,7 @@ async def recurring_time(message: Message, state: FSMContext):
     data = await state.get_data()
     days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
+    photo_text = "да" if data.get('photo') else "нет"
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="Создать", callback_data="confirm_recurring"),
@@ -294,6 +327,7 @@ async def recurring_time(message: Message, state: FSMContext):
         f"Повторяющееся событие:\n\n"
         f"Название: {data['title']}\n"
         f"Описание: {data['description'] or 'нет'}\n"
+        f"Фото: {photo_text}\n"
         f"День: {days[data['day_of_week']]}\n"
         f"Время: {data['hour']:02d}:{data['minute']:02d}\n\n"
         f"Создать?",
@@ -322,7 +356,8 @@ async def confirm_recurring(callback: CallbackQuery, state: FSMContext):
         day_of_week=data['day_of_week'],
         hour=data['hour'],
         minute=data['minute'],
-        created_by=callback.from_user.id
+        created_by=callback.from_user.id,
+        photo=data.get('photo')
     )
 
     days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
@@ -366,7 +401,7 @@ async def list_recurring(callback: CallbackQuery):
         kb_buttons.append([
             InlineKeyboardButton(
                 text=f"{e['title'][:25]} ({days[e['day_of_week']]} {e['hour']:02d}:{e['minute']:02d})",
-                callback_data=f"noop"
+                callback_data=f"edit_recurring_{e['id']}"
             ),
             InlineKeyboardButton(
                 text="Удалить",
@@ -378,6 +413,153 @@ async def list_recurring(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
     await callback.message.answer("Повторяющиеся события:", reply_markup=kb)
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("edit_recurring_"))
+async def edit_recurring_menu(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    event_id = int(callback.data.split("_")[2])
+    event = await get_recurring_event(event_id)
+    if not event:
+        await callback.message.answer("Событие не найдено.")
+        await callback.answer()
+        return
+
+    days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    photo_text = "да" if event['photo'] else "нет"
+    text = (
+        f"Событие: {event['title']}\n"
+        f"Описание: {event['description'] or 'нет'}\n"
+        f"Фото: {photo_text}\n"
+        f"День: {days[event['day_of_week']]}\n"
+        f"Время: {event['hour']:02d}:{event['minute']:02d}"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Название", callback_data=f"ered_{event_id}_title")],
+        [InlineKeyboardButton(text="Описание", callback_data=f"ered_{event_id}_desc")],
+        [InlineKeyboardButton(text="Фото", callback_data=f"ered_{event_id}_photo")],
+        [InlineKeyboardButton(text="День недели", callback_data=f"ered_{event_id}_day")],
+        [InlineKeyboardButton(text="Время", callback_data=f"ered_{event_id}_time")],
+        [InlineKeyboardButton(text="Назад", callback_data="list_recurring")],
+    ])
+    await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("ered_"))
+async def edit_recurring_field(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    parts = callback.data.split("_")
+    event_id = int(parts[1])
+    field = parts[2]
+
+    await state.update_data(event_id=event_id)
+
+    if field == "title":
+        await callback.message.answer("Введите новое название:")
+        await state.set_state(EditRecurringEvent.edit_title)
+    elif field == "desc":
+        await callback.message.answer("Введите новое описание:")
+        await state.set_state(EditRecurringEvent.edit_desc)
+    elif field == "photo":
+        await callback.message.answer("Отправьте новое фото (или 'удалить' чтобы убрать):")
+        await state.set_state(EditRecurringEvent.edit_photo)
+    elif field == "day":
+        days = "0 - Пн, 1 - Вт, 2 - Ср, 3 - Чт, 4 - Пт, 5 - Сб, 6 - Вс"
+        await callback.message.answer(f"День недели:\n{days}\n\nВведите число:")
+        await state.set_state(EditRecurringEvent.edit_day)
+    elif field == "time":
+        await callback.message.answer("Введите время (ЧЧ:ММ):")
+        await state.set_state(EditRecurringEvent.edit_time)
+
+    await callback.answer()
+
+
+@router.message(EditRecurringEvent.edit_title)
+async def edit_recurring_title(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    data = await state.get_data()
+    await update_recurring_event(data['event_id'], title=message.text)
+    await state.clear()
+    await message.answer("Название обновлено!")
+
+
+@router.message(EditRecurringEvent.edit_desc)
+async def edit_recurring_desc(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    data = await state.get_data()
+    desc = message.text if message.text.lower() != "удалить" else ""
+    await update_recurring_event(data['event_id'], description=desc)
+    await state.clear()
+    await message.answer("Описание обновлено!")
+
+
+@router.message(EditRecurringEvent.edit_photo)
+async def edit_recurring_photo(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    data = await state.get_data()
+    if message.photo:
+        photo = message.photo[-1].file_id
+    else:
+        photo = None
+    await update_recurring_event(data['event_id'], photo=photo)
+    await state.clear()
+    await message.answer("Фото обновлено!")
+
+
+@router.message(EditRecurringEvent.edit_day)
+async def edit_recurring_day(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    try:
+        day = int(message.text)
+        if day < 0 or day > 6:
+            await message.answer("Введите число от 0 до 6:")
+            return
+    except ValueError:
+        await message.answer("Введите число:")
+        return
+
+    data = await state.get_data()
+    await update_recurring_event(data['event_id'], day_of_week=day)
+    await state.clear()
+    await message.answer("День обновлён!")
+
+
+@router.message(EditRecurringEvent.edit_time)
+async def edit_recurring_time(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    try:
+        hour, minute = message.text.split(":")
+        hour = int(hour)
+        minute = int(minute)
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            await message.answer("Неверное время. Формат: ЧЧ:ММ")
+            return
+    except Exception:
+        await message.answer("Неверный формат. Используйте ЧЧ:ММ:")
+        return
+
+    data = await state.get_data()
+    await update_recurring_event(data['event_id'], hour=hour, minute=minute)
+    await state.clear()
+    await message.answer("Время обновлено!")
 
 
 @router.callback_query(F.data.startswith("delete_recurring_"))

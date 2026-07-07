@@ -184,6 +184,7 @@ async def init_db():
                 chat_id INTEGER NOT NULL,
                 title TEXT NOT NULL,
                 description TEXT DEFAULT '',
+                photo TEXT,
                 day_of_week INTEGER NOT NULL,
                 hour INTEGER NOT NULL,
                 minute INTEGER DEFAULT 0,
@@ -254,6 +255,10 @@ async def init_db():
             pass
         try:
             await db.execute("ALTER TABLE tournaments ADD COLUMN participation_award INTEGER DEFAULT 0")
+        except Exception:
+            pass
+        try:
+            await db.execute("ALTER TABLE recurring_events ADD COLUMN photo TEXT")
         except Exception:
             pass
         await db.commit()
@@ -484,14 +489,53 @@ async def check_and_award_achievements(user_id, chat_id):
     return awarded
 
 
-async def create_recurring_event(chat_id, title, description, day_of_week, hour, minute, created_by):
+async def create_recurring_event(chat_id, title, description, day_of_week, hour, minute, created_by, photo=None):
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute(
-            "INSERT INTO recurring_events (chat_id, title, description, day_of_week, hour, minute, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (chat_id, title, description, day_of_week, hour, minute, created_by)
+            "INSERT INTO recurring_events (chat_id, title, description, photo, day_of_week, hour, minute, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (chat_id, title, description, photo, day_of_week, hour, minute, created_by)
         )
         await db.commit()
         return cursor.lastrowid
+
+
+async def update_recurring_event(event_id, title=None, description=None, photo=None, day_of_week=None, hour=None, minute=None):
+    async with aiosqlite.connect(DB_NAME) as db:
+        updates = []
+        params = []
+        if title is not None:
+            updates.append("title = ?")
+            params.append(title)
+        if description is not None:
+            updates.append("description = ?")
+            params.append(description)
+        if photo is not None:
+            updates.append("photo = ?")
+            params.append(photo)
+        if day_of_week is not None:
+            updates.append("day_of_week = ?")
+            params.append(day_of_week)
+        if hour is not None:
+            updates.append("hour = ?")
+            params.append(hour)
+        if minute is not None:
+            updates.append("minute = ?")
+            params.append(minute)
+        if not updates:
+            return
+        params.append(event_id)
+        await db.execute(
+            f"UPDATE recurring_events SET {', '.join(updates)} WHERE id = ?",
+            params
+        )
+        await db.commit()
+
+
+async def get_recurring_event(event_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM recurring_events WHERE id = ?", (event_id,))
+        return await cursor.fetchone()
 
 
 async def get_recurring_events(chat_id):

@@ -73,10 +73,17 @@ async def check_recurring_events(bot: Bot):
                         if event['description']:
                             text += f"\n\n{event['description']}"
 
-                        await bot.send_message(
-                            chat_id=event['chat_id'],
-                            text=text
-                        )
+                        if event['photo']:
+                            await bot.send_photo(
+                                chat_id=event['chat_id'],
+                                photo=event['photo'],
+                                caption=text
+                            )
+                        else:
+                            await bot.send_message(
+                                chat_id=event['chat_id'],
+                                text=text
+                            )
                         await mark_recurring_event_created(event['id'])
                         logger.info(f"Recurring event created: {event['title']}")
                     except Exception as e:
