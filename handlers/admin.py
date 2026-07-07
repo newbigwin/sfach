@@ -2235,13 +2235,13 @@ async def list_tournaments(callback: CallbackQuery):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("tournament_"))
+@router.callback_query(F.data.startswith("tournament_details_"))
 async def tournament_details(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа!", show_alert=True)
         return
 
-    tournament_id = int(callback.data.split("_")[1])
+    tournament_id = int(callback.data.split("_")[2])
     tournament = await get_tournament(tournament_id)
 
     if not tournament:
@@ -2327,7 +2327,7 @@ async def auto_bracket_handler(callback: CallbackQuery, bot: Bot):
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Опубликовать в чат", callback_data=f"publish_bracket_{tournament_id}")],
-        [InlineKeyboardButton(text="Назад", callback_data=f"tournament_{tournament_id}")],
+        [InlineKeyboardButton(text="Назад", callback_data=f"tournament_details_{tournament_id}")],
     ])
 
     await callback.message.answer(text, reply_markup=kb)
@@ -2355,14 +2355,18 @@ async def publish_bracket(callback: CallbackQuery, bot: Bot):
     for m in all_matches:
         p1_name = str(m['player1_id'])
         p2_name = str(m['player2_id']) if m['player2_id'] else "BYE"
+        p1_id = m['player1_id']
+        p2_id = m['player2_id']
         for p in participants:
             if p['user_id'] == m['player1_id']:
                 p1_name = p['display_name'] or p['username'] or str(p['user_id'])
             if m['player2_id'] and p['user_id'] == m['player2_id']:
                 p2_name = p['display_name'] or p['username'] or str(p['user_id'])
-        text += f"Раунд {m['round_num']}: {p1_name} vs {p2_name}\n"
+        p1_link = f'<a href="tg://user?id={p1_id}">{p1_name}</a>'
+        p2_link = f'<a href="tg://user?id={p2_id}">{p2_name}</a>' if p2_id else "BYE"
+        text += f"Раунд {m['round_num']}: {p1_link} vs {p2_link}\n"
 
-    await bot.send_message(chat_id=chat_id, text=text)
+    await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
     await callback.message.answer("Сетка опубликована в чате!")
     await callback.answer()
 
@@ -2390,14 +2394,14 @@ async def start_tournament_handler(callback: CallbackQuery, bot: Bot):
     tournament = await get_tournament(tournament_id)
     participants = await get_tournament_participants(tournament_id)
 
-    mentions = " ".join([
+    mentions = ", ".join([
         f"[{p['display_name'] or p['username'] or str(p['user_id'])}](tg://user?id={p['user_id']})"
         for p in participants
     ])
 
     await bot.send_message(
         chat_id=chat_id,
-        text=f"Турнир \"{tournament['name']}\" начат!\n\nУчастники:\n{mentions}",
+        text=f"Турнир \"{tournament['name']}\" начат!\n\nУчастники: {mentions}",
         parse_mode="Markdown"
     )
     await callback.message.answer("Турнир начат и объявлен в чате!")
@@ -2544,6 +2548,9 @@ async def confirm_match(callback: CallbackQuery, state: FSMContext, bot: Bot):
     p1_name = p1['display_name'] or p1['username'] or str(p1['user_id'])
     p2_name = p2['display_name'] or p2['username'] or str(p2['user_id'])
 
+    p1_link = f'<a href="tg://user?id={data["player1_id"]}">{p1_name}</a>'
+    p2_link = f'<a href="tg://user?id={data["player2_id"]}">{p2_name}</a>'
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"{p1_name} победил", callback_data=f"set_winner_{match_id}_{data['player1_id']}")],
         [InlineKeyboardButton(text=f"{p2_name} победил", callback_data=f"set_winner_{match_id}_{data['player2_id']}")],
@@ -2551,8 +2558,9 @@ async def confirm_match(callback: CallbackQuery, state: FSMContext, bot: Bot):
 
     await bot.send_message(
         chat_id=chat_id,
-        text=f"Поединок!\n\n{p1_name} vs {p2_name}\n\nКто победил?",
-        reply_markup=kb
+        text=f"Поединок!\n\n{p1_link} vs {p2_link}\n\nКто победил?",
+        reply_markup=kb,
+        parse_mode="HTML"
     )
 
     await state.clear()
@@ -2626,7 +2634,7 @@ async def match_list(callback: CallbackQuery):
             text += f"Р{m['round_num']} П{m['match_num']}: {p1_name} vs {p2_name} (ожидает)\n"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Назад", callback_data=f"tournament_{tournament_id}")]
+        [InlineKeyboardButton(text="Назад", callback_data=f"tournament_details_{tournament_id}")]
     ])
     await callback.message.answer(text, reply_markup=kb)
     await callback.answer()
@@ -2652,7 +2660,7 @@ async def standings(callback: CallbackQuery):
         text += f"{i}. {name} - Побед: {s['wins']}, Поражений: {s['losses']}\n"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Назад", callback_data=f"tournament_{tournament_id}")]
+        [InlineKeyboardButton(text="Назад", callback_data=f"tournament_details_{tournament_id}")]
     ])
     await callback.message.answer(text, reply_markup=kb)
     await callback.answer()
@@ -2698,7 +2706,7 @@ async def finish_tournament_handler(callback: CallbackQuery, bot: Bot):
         InlineKeyboardButton(text="Объявить результаты", callback_data=f"announce_results_{tournament_id}")
     ])
     kb_buttons.append([
-        InlineKeyboardButton(text="Отмена", callback_data=f"tournament_{tournament_id}")
+        InlineKeyboardButton(text="Отмена", callback_data=f"tournament_details_{tournament_id}")
     ])
 
     kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
@@ -2795,16 +2803,18 @@ async def announce_results_handler(callback: CallbackQuery, bot: Bot):
         text += "Призовые места:\n"
         for prize in prizes:
             name = str(prize['user_id'])
+            uid = prize['user_id']
             if standings:
                 for s in standings:
                     if s['user_id'] == prize['user_id']:
                         name = s['display_name'] or s['username'] or str(s['user_id'])
+                        uid = s['user_id']
                         break
-            text += f"  {prize['place']} место: {name}\n"
+            text += f'  {prize["place"]} место: <a href="tg://user?id={uid}">{name}</a>\n'
     elif standings:
         winner = standings[0]
         winner_name = winner['display_name'] or winner['username'] or str(winner['user_id'])
-        text += f"Победитель: {winner_name}\n"
+        text += f'Победитель: <a href="tg://user?id={winner["user_id"]}">{winner_name}</a>\n'
 
     if all_awarded:
         text += "\nНаграждены достижениями:\n"
@@ -2813,7 +2823,7 @@ async def announce_results_handler(callback: CallbackQuery, bot: Bot):
             if a in ACHIEVEMENTS:
                 text += f"  {ACHIEVEMENTS[a][0]}\n"
 
-    await bot.send_message(chat_id=chat_id, text=text)
+    await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
     await callback.message.answer("Результаты объявлены в чате! Рейтинги обновлены.")
     await callback.answer()
 
