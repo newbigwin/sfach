@@ -50,6 +50,12 @@ def main():
     webhook_requests_handler.register(app, path=WEBHOOK_PATH)
     setup_application(app, dp, bot=bot)
 
+    async def health_check(request):
+        return web.Response(text="ok")
+
+    app.router.add_get("/", health_check)
+    app.router.add_get("/health", health_check)
+
     web.run_app(app, host=WEB_SERVER_HOST, port=WEB_SERVER_PORT)
 
 
