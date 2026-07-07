@@ -117,6 +117,17 @@ async def init_db():
                 FOREIGN KEY (winner_id) REFERENCES tournament_participants(user_id)
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                remind_at TIMESTAMP NOT NULL,
+                created_by INTEGER,
+                sent INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         await db.commit()
 
         # Migration: add new columns to existing tables
@@ -149,6 +160,47 @@ async def get_setting(key, default=None):
 
 async def get_chat_id():
     return await get_setting("chat_id")
+
+
+async def add_reminder(chat_id, title, remind_at, created_by=None):
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            "INSERT INTO reminders (chat_id, title, remind_at, created_by) VALUES (?, ?, ?, ?)",
+            (chat_id, title, remind_at, created_by)
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_pending_reminders():
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM reminders WHERE sent = 0 AND remind_at <= datetime('now') ORDER BY remind_at"
+        )
+        return await cursor.fetchall()
+
+
+async def mark_reminder_sent(reminder_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE reminders SET sent = 1 WHERE id = ?", (reminder_id,))
+        await db.commit()
+
+
+async def get_active_reminders(chat_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM reminders WHERE chat_id = ? AND sent = 0 ORDER BY remind_at",
+            (chat_id,)
+        )
+        return await cursor.fetchall()
+
+
+async def delete_reminder(reminder_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+        await db.commit()
 
 
 async def track_chat_member(user_id, chat_id, username=None, display_name=None):

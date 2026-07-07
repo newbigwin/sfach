@@ -18,7 +18,8 @@ from database import (
     create_match, get_match, set_match_winner, get_tournament_matches,
     get_tournament_standings, delete_tournament, update_tournament_message_id,
     set_setting, get_setting, get_chat_id,
-    track_chat_member, get_chat_members
+    track_chat_member, get_chat_members,
+    add_reminder, delete_reminder
 )
 
 router = Router()
@@ -67,6 +68,7 @@ def admin_keyboard():
         [InlineKeyboardButton(text="События", callback_data="admin_events")],
         [InlineKeyboardButton(text="Голосования", callback_data="admin_polls")],
         [InlineKeyboardButton(text="Турниры", callback_data="admin_tournaments")],
+        [InlineKeyboardButton(text="Напоминания", callback_data="admin_reminders")],
         [InlineKeyboardButton(text="Утихомирить всех", callback_data="mute_menu")],
         [InlineKeyboardButton(text="Созвать всех", callback_data="summon_all")],
         [InlineKeyboardButton(text="Мануал", callback_data="admin_manual")],
@@ -153,6 +155,194 @@ async def restore_file_cmd(message: Message):
     await message.bot.download_file(file_info.file_path, DB_NAME)
 
     await message.answer("База данных восстановлена! Перезапустите бота.")
+
+
+class CreateReminder(StatesGroup):
+    title = State()
+    remind_at = State()
+    confirm = State()
+
+
+@router.callback_query(F.data == "admin_reminders")
+async def admin_reminders_menu(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Создать напоминание", callback_data="create_reminder")],
+        [InlineKeyboardButton(text="Активные напоминания", callback_data="list_reminders")],
+        [InlineKeyboardButton(text="Назад", callback_data="admin_panel")],
+    ])
+    await callback.message.answer("Напоминания:", reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "create_reminder")
+async def create_reminder_start(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await callback.message.answer(
+        "Введите текст напоминания:"
+    )
+    await state.set_state(CreateReminder.title)
+    await callback.answer()
+
+
+@router.message(CreateReminder.title)
+async def reminder_title(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    await state.update_data(title=message.text)
+    await message.answer(
+        "Когда напомнить? Формат: ДД.ММ ЧЧ:ММ\n"
+        "Например: 15.06 19:00\n\n"
+        "Или через一段时间:\n"
+        "30м — через 30 минут\n"
+        "1ч — через 1 час\n"
+        "2д — через 2 дня"
+    )
+    await state.set_state(CreateReminder.remind_at)
+
+
+@router.message(CreateReminder.remind_at)
+async def reminder_time(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    from datetime import datetime, timedelta
+    text = message.text.strip()
+    now = datetime.now()
+
+    try:
+        if text.endswith("м"):
+            minutes = int(text[:-1])
+            remind_at = now + timedelta(minutes=minutes)
+        elif text.endswith("ч"):
+            hours = int(text[:-1])
+            remind_at = now + timedelta(hours=hours)
+        elif text.endswith("д"):
+            days = int(text[:-1])
+            remind_at = now + timedelta(days=days)
+        else:
+            day, time_part = text.split(" ")
+            hour, minute = time_part.split(":")
+            remind_at = datetime(now.year, now.month, int(day), int(hour), int(minute))
+            if remind_at < now:
+                remind_at = remind_at + timedelta(days=1)
+    except Exception:
+        await message.answer("Неверный формат. Попробуйте снова:")
+        return
+
+    await state.update_data(remind_at=remind_at.isoformat())
+
+    data = await state.get_data()
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Создать", callback_data="confirm_reminder"),
+            InlineKeyboardButton(text="Отмена", callback_data="cancel_reminder"),
+        ]
+    ])
+    await message.answer(
+        f"Напоминание:\n\n"
+        f"Текст: {data['title']}\n"
+        f"Когда: {remind_at.strftime('%d.%m %H:%M')}\n\n"
+        f"Создать?",
+        reply_markup=kb
+    )
+    await state.set_state(CreateReminder.confirm)
+
+
+@router.callback_query(F.data == "confirm_reminder", CreateReminder.confirm)
+async def confirm_reminder(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    chat_id = await get_chat_id()
+    if not chat_id:
+        await callback.message.answer("Сначала настройте чат командой /setchat в группе!")
+        await callback.answer()
+        return
+
+    data = await state.get_data()
+    await add_reminder(
+        chat_id=chat_id,
+        title=data['title'],
+        remind_at=data['remind_at'],
+        created_by=callback.from_user.id
+    )
+
+    await state.clear()
+    await callback.message.answer("Напоминание создано!")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "cancel_reminder")
+async def cancel_reminder(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await state.clear()
+    await callback.message.answer("Создание отменено.")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "list_reminders")
+async def list_reminders(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    chat_id = await get_chat_id()
+    if not chat_id:
+        await callback.message.answer("Сначала настройте чат командой /setchat в группе!")
+        await callback.answer()
+        return
+
+    from database import get_active_reminders
+    reminders = await get_active_reminders(chat_id)
+
+    if not reminders:
+        await callback.message.answer("Нет активных напоминаний.")
+        await callback.answer()
+        return
+
+    kb_buttons = []
+    for r in reminders:
+        from datetime import datetime
+        dt = datetime.fromisoformat(r['remind_at'])
+        kb_buttons.append([
+            InlineKeyboardButton(
+                text=f"{r['title'][:30]} ({dt.strftime('%d.%m %H:%M')})",
+                callback_data=f"noop"
+            ),
+            InlineKeyboardButton(
+                text="Удалить",
+                callback_data=f"delete_reminder_{r['id']}"
+            )
+        ])
+
+    kb_buttons.append([InlineKeyboardButton(text="Назад", callback_data="admin_reminders")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
+    await callback.message.answer("Активные напоминания:", reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("delete_reminder_"))
+async def delete_reminder_handler(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    reminder_id = int(callback.data.split("_")[2])
+    await delete_reminder(reminder_id)
+    await callback.message.answer("Напоминание удалено.")
+    await callback.answer()
 
 
 @router.callback_query(F.data == "admin_manual")

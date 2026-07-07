@@ -1,4 +1,5 @@
 import os
+import asyncio
 import logging
 from aiohttp import web
 from aiogram import Bot, Dispatcher
@@ -6,7 +7,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 from config import BOT_TOKEN
-from database import init_db
+from database import init_db, get_pending_reminders, mark_reminder_sent
 from handlers import admin, user
 
 logging.basicConfig(
@@ -20,14 +21,41 @@ WEBHOOK_PATH = "/webhook"
 WEB_SERVER_HOST = "0.0.0.0"
 WEB_SERVER_PORT = int(os.getenv("PORT", 8000))
 
+reminder_task = None
+
+
+async def check_reminders(bot: Bot):
+    while True:
+        try:
+            reminders = await get_pending_reminders()
+            for reminder in reminders:
+                try:
+                    await bot.send_message(
+                        chat_id=reminder['chat_id'],
+                        text=f"Напоминание: {reminder['title']}"
+                    )
+                    await mark_reminder_sent(reminder['id'])
+                    logger.info(f"Reminder sent: {reminder['title']}")
+                except Exception as e:
+                    logger.error(f"Failed to send reminder: {e}")
+                    await mark_reminder_sent(reminder['id'])
+        except Exception as e:
+            logger.error(f"Reminder check error: {e}")
+        await asyncio.sleep(60)
+
 
 async def on_startup(bot: Bot):
+    global reminder_task
     await bot.set_webhook(f"{BASE_WEBHOOK_URL}{WEBHOOK_PATH}")
     await init_db()
+    reminder_task = asyncio.create_task(check_reminders(bot))
     logger.info(f"Бот запущен! Webhook: {BASE_WEBHOOK_URL}{WEBHOOK_PATH}")
 
 
 async def on_shutdown(bot: Bot):
+    global reminder_task
+    if reminder_task:
+        reminder_task.cancel()
     await bot.delete_webhook()
     logger.info("Бот остановлен.")
 
