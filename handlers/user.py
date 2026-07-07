@@ -37,10 +37,6 @@ async def track_user(message: Message):
 
 @router.message(CommandStart())
 async def start(message: Message):
-    configured = await get_chat_id()
-    if message.chat.type != "private" and str(message.chat.id) != str(configured):
-        return
-
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="События", callback_data="user_events")],
         [InlineKeyboardButton(text="Голосования", callback_data="user_polls")],
@@ -768,18 +764,27 @@ async def cmd_quiz(message: Message):
 
     kb_buttons = []
     for i, opt in enumerate(quiz['options']):
-        kb_buttons.append([InlineKeyboardButton(text=opt, callback_data=f"quiz_{quiz['id']}_{i}_{quiz['correct_index']}")])
+        cb = f"qz{quiz['id']}x{i}"
+        kb_buttons.append([InlineKeyboardButton(text=opt, callback_data=cb)])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
 
     await message.answer(f"Викторина:\n\n{quiz['question']}", reply_markup=kb)
 
 
-@router.callback_query(F.data.startswith("quiz_"))
+@router.callback_query(F.data.startswith("qz"))
 async def quiz_answer(callback: CallbackQuery):
-    parts = callback.data.split("_")
-    quiz_id = int(parts[1])
-    chosen = int(parts[2])
-    correct = int(parts[3])
+    parts = callback.data.split("x")
+    quiz_id = int(parts[0][2:])
+    chosen = int(parts[1])
+
+    from database import aiosqlite, DB_NAME
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT correct_index FROM quizzes WHERE id = ?", (quiz_id,))
+        row = await cursor.fetchone()
+        if not row:
+            await callback.answer("Вопрос не найден")
+            return
+        correct = row[0]
 
     if chosen == correct:
         from database import add_coins

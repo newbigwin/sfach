@@ -99,6 +99,19 @@ async def admin_panel(message: Message):
     )
 
 
+@router.callback_query(F.data == "admin_panel")
+async def admin_panel_callback(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        "Панель администратора",
+        reply_markup=admin_keyboard()
+    )
+    await callback.answer()
+
+
 @router.message(Command("setchat"))
 async def set_chat(message: Message):
     if not is_admin(message.from_user.id):
@@ -2933,24 +2946,27 @@ async def admin_stats_menu(callback: CallbackQuery):
         await callback.answer("Нет доступа!", show_alert=True)
         return
 
-    stats = await get_bot_stats()
-    t_stats = await get_tournament_analytics()
+    try:
+        stats = await get_bot_stats()
+        t_stats = await get_tournament_analytics()
 
-    text = (
-        f"Статистика бота:\n\n"
-        f"Пользователей: {stats['total_users']}\n"
-        f"Турниров: {stats['total_tournaments']}\n"
-        f"Матчей: {stats['total_matches']}\n"
-        f"Событий: {stats['total_events']}\n"
-        f"Голосований: {stats['total_polls']}\n"
-        f"Ставок: {stats['total_bets']}\n"
-        f"Кланов: {stats['total_clans']}\n"
-    )
+        text = (
+            f"Статистика бота:\n\n"
+            f"Пользователей: {stats['total_users']}\n"
+            f"Турниров: {stats['total_tournaments']}\n"
+            f"Матчей: {stats['total_matches']}\n"
+            f"Событий: {stats['total_events']}\n"
+            f"Голосований: {stats['total_polls']}\n"
+            f"Ставок: {stats['total_bets']}\n"
+            f"Кланов: {stats['total_clans']}\n"
+        )
 
-    if t_stats['top_winners']:
-        text += "\nТоп победителей:\n"
-        for i, w in enumerate(t_stats['top_winners'][:3], 1):
-            text += f"  {i}. ID {w['winner_id']} — {w['wins']} побед\n"
+        if t_stats.get('top_winners'):
+            text += "\nТоп победителей:\n"
+            for i, w in enumerate(t_stats['top_winners'][:3], 1):
+                text += f"  {i}. ID {w['winner_id']} — {w['wins']} побед\n"
 
-    await callback.message.answer(text)
+        await callback.message.answer(text)
+    except Exception as e:
+        await callback.message.answer(f"Ошибка при получении статистики: {e}")
     await callback.answer()
