@@ -14,6 +14,7 @@ from database import (
     close_poll, update_poll_message_id, get_event,
     create_tournament, get_tournament, get_active_tournaments, start_tournament,
     get_tournament_participants, get_participant_count, finish_tournament,
+    get_tournament_prizes, set_tournament_prize, remove_tournament_prize,
     create_match, get_match, set_match_winner, get_tournament_matches,
     get_tournament_standings, delete_tournament, update_tournament_message_id,
     set_setting, get_setting, get_chat_id
@@ -44,6 +45,7 @@ class CreateTournament(StatesGroup):
     name = State()
     description = State()
     max_participants = State()
+    prize_places = State()
     image = State()
     confirm = State()
     editing = State()
@@ -103,6 +105,53 @@ async def set_chat(message: Message):
         f"Название: {message.chat.title}\n\n"
         f"Теперь бот будет публиковать посты здесь."
     )
+
+
+@router.message(Command("backup"))
+async def backup_cmd(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    import os
+    from config import DB_NAME
+
+    if not os.path.exists(DB_NAME):
+        await message.answer("База данных не найдена.")
+        return
+
+    from aiogram.types import FSInputFile
+    await message.answer("Бэкап базы данных:")
+    await message.answer_document(FSInputFile(DB_NAME), caption="backup_shadow_bot.db")
+
+
+@router.message(Command("restore"))
+async def restore_cmd(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    await message.answer(
+        "Для восстановления БД:\n"
+        "1. Отправьте файл бэкапа командой /restore (с вложением)\n"
+        "2. Или загрузите файл через Reply на сообщение с бэкапом"
+    )
+
+
+@router.message(Command("restore"), F.document)
+async def restore_file_cmd(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    if not message.document:
+        await message.answer("Прикрепите файл бэкапа.")
+        return
+
+    import os
+    from config import DB_NAME
+
+    file_info = await message.bot.get_file(message.document.file_id)
+    await message.bot.download_file(file_info.file_path, DB_NAME)
+
+    await message.answer("База данных восстановлена! Перезапустите бота.")
 
 
 @router.callback_query(F.data == "admin_manual")
@@ -1213,6 +1262,56 @@ async def tournament_max_participants(message: Message, state: FSMContext):
 
     await state.update_data(max_participants=max_p)
     await message.answer(
+        "Выберите количество призовых мест:\n\n"
+        "1 — Только победитель\n"
+        "3 — Три призовых места\n"
+        "5 — Пять призовых мест\n\n"
+        "Введите число или нажмите кнопку:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Только победитель", callback_data="prize_1")],
+            [InlineKeyboardButton(text="Три призовых места", callback_data="prize_3")],
+            [InlineKeyboardButton(text="Пять призовых мест", callback_data="prize_5")],
+        ])
+    )
+    await state.set_state(CreateTournament.prize_places)
+
+
+@router.callback_query(F.data.startswith("prize_"), CreateTournament.prize_places)
+async def tournament_prize_places(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    prize_places = int(callback.data.split("_")[1])
+    await state.update_data(prize_places=prize_places, participation_award=0)
+
+    await callback.message.answer(
+        "Отправьте изображение для поста или нажмите 'Пропустить':",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Пропустить", callback_data="skip_tourney_image")]
+        ])
+    )
+    await state.set_state(CreateTournament.image)
+    await callback.answer()
+
+
+@router.message(CreateTournament.prize_places)
+async def tournament_prize_places_text(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    try:
+        prize_places = int(message.text)
+        if prize_places < 1 or prize_places > 10:
+            await message.answer("Введите число от 1 до 10:")
+            return
+    except ValueError:
+        await message.answer("Введите число:")
+        return
+
+    await state.update_data(prize_places=prize_places, participation_award=0)
+
+    await message.answer(
         "Отправьте изображение для поста или нажмите 'Пропустить':",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Пропустить", callback_data="skip_tourney_image")]
@@ -1266,6 +1365,7 @@ async def show_tournament_preview(message_or_callback, state: FSMContext):
         f"Название: {data['name']}\n"
         f"Описание: {data['description']}\n"
         f"Макс. участников: {data['max_participants']}\n"
+        f"Призовых мест: {data.get('prize_places', 1)}\n"
         f"Изображение: {'да' if data.get('image_file_id') else 'нет'}\n\n"
         f"Нажмите 'Опубликовать' или отредактируйте."
     )
@@ -1413,17 +1513,27 @@ async def confirm_tournament(callback: CallbackQuery, state: FSMContext, bot: Bo
         max_participants=data['max_participants'],
         created_by=callback.from_user.id,
         chat_id=chat_id,
-        image_file_id=data.get('image_file_id')
+        image_file_id=data.get('image_file_id'),
+        prize_places=data.get('prize_places', 1),
+        participation_award=data.get('participation_award', 0)
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Записаться", callback_data=f"join_tournament_{tournament_id}")]
     ])
 
+    prize_text = ""
+    prize_places = data.get('prize_places', 1)
+    if prize_places == 1:
+        prize_text = "Приз: победитель"
+    else:
+        prize_text = f"Призовых мест: {prize_places}"
+
     text = (
         f"{data['name']}\n\n"
         f"{data['description']}\n\n"
-        f"Макс. участников: {data['max_participants']}\n\n"
+        f"Макс. участников: {data['max_participants']}\n"
+        f"{prize_text}\n\n"
         f"Записывайтесь!"
     )
 
@@ -1824,6 +1934,85 @@ async def finish_tournament_handler(callback: CallbackQuery, bot: Bot):
         await callback.answer("Нет доступа!", show_alert=True)
         return
 
+    tournament_id = int(callback.data.split("_")[2])
+    tournament = await get_tournament(tournament_id)
+
+    if not tournament:
+        await callback.answer("Турнир не найден!", show_alert=True)
+        return
+
+    participants = await get_tournament_participants(tournament_id)
+    if not participants:
+        await callback.answer("Нет участников!", show_alert=True)
+        return
+
+    prize_places = tournament['prize_places'] or 1
+
+    text = f"Назначьте призовые места для турнира \"{tournament['name']}\":\n\n"
+    text += f"Количество призовых мест: {prize_places}\n\n"
+
+    kb_buttons = []
+    for p in participants:
+        name = p['display_name'] or str(p['user_id'])
+        if p['username']:
+            name += f" (@{p['username']})"
+        row = [InlineKeyboardButton(text=name, callback_data=f"noop")]
+        for place in range(1, prize_places + 1):
+            row.append(InlineKeyboardButton(
+                text=f"{place} место",
+                callback_data=f"assign_prize_{tournament_id}_{p['user_id']}_{place}"
+            ))
+        kb_buttons.append(row)
+
+    kb_buttons.append([
+        InlineKeyboardButton(text="Объявить результаты", callback_data=f"announce_results_{tournament_id}")
+    ])
+    kb_buttons.append([
+        InlineKeyboardButton(text="Отмена", callback_data=f"tournament_{tournament_id}")
+    ])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
+    await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("assign_prize_"))
+async def assign_prize_handler(callback: CallbackQuery, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    parts = callback.data.split("_")
+    tournament_id = int(parts[2])
+    user_id = int(parts[3])
+    place = int(parts[4])
+
+    tournament = await get_tournament(tournament_id)
+    participants = await get_tournament_participants(tournament_id)
+
+    place_names = {1: "победитель", 2: "второе место", 3: "третье место"}
+    place_name = place_names.get(place, f"{place} место")
+
+    user = None
+    for p in participants:
+        if p['user_id'] == user_id:
+            user = p
+            break
+
+    if user:
+        name = user['display_name'] or str(user['user_id'])
+        await set_tournament_prize(tournament_id, user_id, place, place_name)
+        await callback.answer(f"{name} — {place_name}", show_alert=True)
+    else:
+        await callback.answer("Участник не найден!", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("announce_results_"))
+async def announce_results_handler(callback: CallbackQuery, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
     chat_id = await get_chat_id()
     if not chat_id:
         await callback.message.answer("Сначала настройте чат командой /setchat в группе!")
@@ -1834,25 +2023,26 @@ async def finish_tournament_handler(callback: CallbackQuery, bot: Bot):
     await finish_tournament(tournament_id)
 
     tournament = await get_tournament(tournament_id)
-    standings_data = await get_tournament_standings(tournament_id)
+    prizes = await get_tournament_prizes(tournament_id)
+    standings = await get_tournament_standings(tournament_id)
 
-    if standings_data:
-        winner = standings_data[0]
+    text = f"Турнир \"{tournament['name']}\" завершен!\n\n"
+
+    if prizes:
+        text += "Призовые места:\n"
+        for prize in prizes:
+            name = str(prize['user_id'])
+            if standings:
+                for s in standings:
+                    if s['user_id'] == prize['user_id']:
+                        name = s['display_name'] or s['username'] or str(s['user_id'])
+                        break
+            text += f"  {prize['place']} место: {name}\n"
+    elif standings:
+        winner = standings[0]
         winner_name = winner['display_name'] or winner['username'] or str(winner['user_id'])
+        text += f"Победитель: {winner_name}\n"
 
-        await bot.send_message(
-            chat_id=chat_id,
-            text=(
-                f"Турнир \"{tournament['name']}\" завершен!\n\n"
-                f"Победитель: {winner_name}\n"
-                f"Побед: {winner['wins']}"
-            )
-        )
-    else:
-        await bot.send_message(
-            chat_id=chat_id,
-            text=f"Турнир \"{tournament['name']}\" завершен!"
-        )
-
-    await callback.message.answer("Турнир завершен и объявлен в чате!")
+    await bot.send_message(chat_id=chat_id, text=text)
+    await callback.message.answer("Результаты объявлены в чате!")
     await callback.answer()

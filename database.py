@@ -56,12 +56,26 @@ async def init_db():
                 name TEXT NOT NULL,
                 description TEXT,
                 max_participants INTEGER DEFAULT 16,
+                prize_places INTEGER DEFAULT 1,
+                participation_award INTEGER DEFAULT 0,
                 status TEXT DEFAULT 'registration',
                 image_file_id TEXT,
                 created_by INTEGER,
                 chat_id INTEGER,
                 message_id INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS tournament_prizes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tournament_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                place INTEGER NOT NULL,
+                prize_name TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (tournament_id) REFERENCES tournaments(id),
+                UNIQUE(tournament_id, user_id)
             )
         """)
         await db.execute("""
@@ -94,6 +108,17 @@ async def init_db():
                 FOREIGN KEY (winner_id) REFERENCES tournament_participants(user_id)
             )
         """)
+        await db.commit()
+
+        # Migration: add new columns to existing tables
+        try:
+            await db.execute("ALTER TABLE tournaments ADD COLUMN prize_places INTEGER DEFAULT 1")
+        except Exception:
+            pass
+        try:
+            await db.execute("ALTER TABLE tournaments ADD COLUMN participation_award INTEGER DEFAULT 0")
+        except Exception:
+            pass
         await db.commit()
 
 
@@ -234,11 +259,11 @@ async def close_poll(poll_id):
         await db.commit()
 
 
-async def create_tournament(name, description, max_participants, created_by, chat_id, image_file_id=None):
+async def create_tournament(name, description, max_participants, created_by, chat_id, image_file_id=None, prize_places=1, participation_award=0):
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute(
-            "INSERT INTO tournaments (name, description, max_participants, created_by, chat_id, image_file_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (name, description, max_participants, created_by, chat_id, image_file_id)
+            "INSERT INTO tournaments (name, description, max_participants, created_by, chat_id, image_file_id, prize_places, participation_award) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (name, description, max_participants, created_by, chat_id, image_file_id, prize_places, participation_award)
         )
         await db.commit()
         return cursor.lastrowid
@@ -249,6 +274,38 @@ async def get_tournament(tournament_id):
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("SELECT * FROM tournaments WHERE id = ?", (tournament_id,))
         return await cursor.fetchone()
+
+
+async def set_tournament_prize(tournament_id, user_id, place, prize_name=None):
+    async with aiosqlite.connect(DB_NAME) as db:
+        try:
+            await db.execute(
+                "INSERT INTO tournament_prizes (tournament_id, user_id, place, prize_name) VALUES (?, ?, ?, ?)",
+                (tournament_id, user_id, place, prize_name)
+            )
+            await db.commit()
+            return True
+        except Exception:
+            return False
+
+
+async def get_tournament_prizes(tournament_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM tournament_prizes WHERE tournament_id = ? ORDER BY place",
+            (tournament_id,)
+        )
+        return await cursor.fetchall()
+
+
+async def remove_tournament_prize(tournament_id, user_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "DELETE FROM tournament_prizes WHERE tournament_id = ? AND user_id = ?",
+            (tournament_id, user_id)
+        )
+        await db.commit()
 
 
 async def get_active_tournaments(chat_id):
