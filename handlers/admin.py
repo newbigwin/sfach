@@ -9,13 +9,14 @@ from aiogram.fsm.state import State, StatesGroup
 
 from config import ADMIN_ID
 from database import (
-    add_event, get_events, delete_event, add_poll, get_active_polls,
-    get_poll, vote, get_poll_results, close_poll, get_event,
+    add_event, get_events, delete_event, update_event_message_id,
+    add_poll, get_active_polls, get_poll, vote, get_poll_results, get_poll_votes,
+    close_poll, update_poll_message_id, get_event,
     create_tournament, get_tournament, get_active_tournaments, start_tournament,
     get_tournament_participants, get_participant_count, finish_tournament,
     create_match, get_match, set_match_winner, get_tournament_matches,
-    get_tournament_standings, delete_tournament, set_setting, get_setting,
-    get_chat_id
+    get_tournament_standings, delete_tournament, update_tournament_message_id,
+    set_setting, get_setting, get_chat_id
 )
 
 router = Router()
@@ -440,18 +441,20 @@ async def confirm_event(callback: CallbackQuery, state: FSMContext, bot: Bot):
     )
 
     if data.get('image_file_id'):
-        await bot.send_photo(
+        msg = await bot.send_photo(
             chat_id=chat_id,
             photo=data['image_file_id'],
             caption=text,
             reply_markup=kb
         )
     else:
-        await bot.send_message(
+        msg = await bot.send_message(
             chat_id=chat_id,
             text=text,
             reply_markup=kb
         )
+
+    await update_event_message_id(event_id, msg.message_id)
 
     await state.clear()
     await callback.message.answer("Событие опубликовано в чате!")
@@ -638,8 +641,14 @@ async def show_poll_preview(message_or_callback, state: FSMContext):
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="Создать", callback_data="confirm_poll"),
+            InlineKeyboardButton(text="Редактировать вопрос", callback_data="edit_poll_question"),
+            InlineKeyboardButton(text="Редактировать варианты", callback_data="edit_poll_options"),
+        ],
+        [
             InlineKeyboardButton(text="Изображение", callback_data="edit_poll_image"),
+        ],
+        [
+            InlineKeyboardButton(text="Создать", callback_data="confirm_poll"),
             InlineKeyboardButton(text="Отмена", callback_data="cancel_poll"),
         ]
     ])
@@ -673,6 +682,54 @@ async def show_poll_preview(message_or_callback, state: FSMContext):
             await message_or_callback.message.edit_text(text, reply_markup=kb)
 
     await state.set_state(CreatePoll.confirm)
+
+
+@router.callback_query(F.data == "edit_poll_question", CreatePoll.confirm)
+async def edit_poll_question(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await callback.message.answer("Введите новый вопрос:")
+    await state.set_state(CreatePoll.editing)
+    await state.update_data(edit_field="question")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "edit_poll_options", CreatePoll.confirm)
+async def edit_poll_options(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await callback.message.answer("Введите новые варианты (каждый с новой строки, минимум 2):")
+    await state.set_state(CreatePoll.editing)
+    await state.update_data(edit_field="options")
+    await callback.answer()
+
+
+@router.message(CreatePoll.editing, F.text)
+async def poll_editing_save(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    data = await state.get_data()
+    field = data['edit_field']
+
+    if field == "question":
+        await state.update_data(question=message.text)
+    elif field == "options":
+        options = [opt.strip() for opt in message.text.split("\n") if opt.strip()]
+        if len(options) < 2:
+            await message.answer("Нужно минимум 2 варианта:")
+            return
+        if len(options) > 10:
+            await message.answer("Максимум 10 вариантов:")
+            return
+        await state.update_data(options=options)
+
+    await message.answer("Обновлено!")
+    await show_poll_preview(message, state)
 
 
 @router.callback_query(F.data == "edit_poll_image", CreatePoll.confirm)
@@ -747,18 +804,20 @@ async def confirm_poll(callback: CallbackQuery, state: FSMContext, bot: Bot):
     text = f"Голосование: {data['question']}"
 
     if data.get('image_file_id'):
-        await bot.send_photo(
+        msg = await bot.send_photo(
             chat_id=chat_id,
             photo=data['image_file_id'],
             caption=text,
             reply_markup=kb
         )
     else:
-        await bot.send_message(
+        msg = await bot.send_message(
             chat_id=chat_id,
             text=text,
             reply_markup=kb
         )
+
+    await update_poll_message_id(poll_id, msg.message_id)
 
     await state.clear()
     await callback.message.answer("Голосование опубликовано в чате!")
@@ -839,7 +898,11 @@ async def list_polls(callback: CallbackQuery):
     for poll in polls:
         kb_buttons.append([
             InlineKeyboardButton(
-                text=f"Закрыть: {poll['question'][:30]}",
+                text=f"Кто голосовал: {poll['question'][:25]}",
+                callback_data=f"view_votes_{poll['id']}"
+            ),
+            InlineKeyboardButton(
+                text=f"Закрыть",
                 callback_data=f"close_poll_{poll['id']}"
             )
         ])
@@ -847,6 +910,53 @@ async def list_polls(callback: CallbackQuery):
     kb_buttons.append([InlineKeyboardButton(text="Назад", callback_data="admin_polls")])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
     await callback.message.answer("Голосования:", reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("view_votes_"))
+async def view_votes_handler(callback: CallbackQuery, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    poll_id = int(callback.data.split("_")[2])
+    poll = await get_poll(poll_id)
+    if not poll:
+        await callback.answer("Голосование не найдено!", show_alert=True)
+        return
+
+    options = poll['options'].split("|")
+    votes = await get_poll_votes(poll_id)
+
+    if not votes:
+        await callback.message.answer("Пока никто не проголосовал.")
+        await callback.answer()
+        return
+
+    votes_by_option = {}
+    for v in votes:
+        idx = v['option_index']
+        if idx not in votes_by_option:
+            votes_by_option[idx] = []
+        votes_by_option[idx].append(v['user_id'])
+
+    text = f"Голосование: {poll['question']}\n\n"
+
+    for i, opt in enumerate(options):
+        voters = votes_by_option.get(i, [])
+        text += f"📌 {opt} ({len(voters)}):\n"
+        if voters:
+            for uid in voters:
+                text += f'  • <a href="tg://user?id={uid}">{uid}</a>\n'
+        else:
+            text += "  — никто\n"
+        text += "\n"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Назад", callback_data="list_polls")]
+    ])
+
+    await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
 
 
@@ -1031,7 +1141,8 @@ async def summon_all(callback: CallbackQuery, bot: Bot):
             if member.status in ("creator", "administrator"):
                 continue
 
-            members.append(member.user.id)
+            name = member.user.full_name or member.user.username or str(member.user.id)
+            members.append((member.user.id, name))
     except Exception as e:
         await callback.message.answer(f"Ошибка при получении участников: {e}")
         await callback.answer()
@@ -1043,8 +1154,8 @@ async def summon_all(callback: CallbackQuery, bot: Bot):
         return
 
     mentions = []
-    for uid in members[:50]:
-        mentions.append(f'<a href="tg://user?id={uid}">user</a>')
+    for uid, name in members[:50]:
+        mentions.append(f'<a href="tg://user?id={uid}">{name}</a>')
 
     await bot.send_message(
         chat_id=chat_id,
@@ -1317,18 +1428,20 @@ async def confirm_tournament(callback: CallbackQuery, state: FSMContext, bot: Bo
     )
 
     if data.get('image_file_id'):
-        await bot.send_photo(
+        msg = await bot.send_photo(
             chat_id=chat_id,
             photo=data['image_file_id'],
             caption=text,
             reply_markup=kb
         )
     else:
-        await bot.send_message(
+        msg = await bot.send_message(
             chat_id=chat_id,
             text=text,
             reply_markup=kb
         )
+
+    await update_tournament_message_id(tournament_id, msg.message_id)
 
     await state.clear()
     await callback.message.answer("Турнир опубликован в чате!")
@@ -1402,7 +1515,10 @@ async def tournament_details(callback: CallbackQuery):
     if participants:
         text += "Участники:\n"
         for i, p in enumerate(participants, 1):
-            text += f"{i}. {p['display_name'] or p['username']}\n"
+            name = p['display_name'] or str(p['user_id'])
+            if p['username']:
+                name += f" (@{p['username']})"
+            text += f"{i}. {name}\n"
     else:
         text += "Пока нет участников.\n"
 
@@ -1446,7 +1562,10 @@ async def start_tournament_handler(callback: CallbackQuery, bot: Bot):
     tournament = await get_tournament(tournament_id)
     participants = await get_tournament_participants(tournament_id)
 
-    mentions = " ".join([f"[user](tg://user?id={p['user_id']})" for p in participants])
+    mentions = " ".join([
+        f"[{p['display_name'] or p['username'] or str(p['user_id'])}](tg://user?id={p['user_id']})"
+        for p in participants
+    ])
 
     await bot.send_message(
         chat_id=chat_id,

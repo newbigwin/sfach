@@ -150,6 +150,24 @@ async def delete_event(event_id):
         await db.commit()
 
 
+async def update_event_message_id(event_id, message_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE events SET message_id = ? WHERE id = ?", (message_id, event_id))
+        await db.commit()
+
+
+async def update_poll_message_id(poll_id, message_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE polls SET message_id = ? WHERE id = ?", (message_id, poll_id))
+        await db.commit()
+
+
+async def update_tournament_message_id(tournament_id, message_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE tournaments SET message_id = ? WHERE id = ?", (message_id, tournament_id))
+        await db.commit()
+
+
 async def add_poll(question, options, poll_type, created_by, chat_id, event_id=None, message_id=None, image_file_id=None):
     async with aiosqlite.connect(DB_NAME) as db:
         options_str = "|".join(options)
@@ -195,6 +213,16 @@ async def get_poll_results(poll_id):
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute(
             "SELECT option_index, COUNT(*) as count FROM poll_votes WHERE poll_id = ? GROUP BY option_index",
+            (poll_id,)
+        )
+        return await cursor.fetchall()
+
+
+async def get_poll_votes(poll_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT user_id, option_index, voted_at FROM poll_votes WHERE poll_id = ? ORDER BY voted_at",
             (poll_id,)
         )
         return await cursor.fetchall()

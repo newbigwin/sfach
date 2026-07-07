@@ -306,12 +306,19 @@ async def join_tournament_handler(callback: CallbackQuery, bot: Bot):
         if chat_id:
             await bot.send_message(
                 chat_id=chat_id,
-                text=f"{display_name} записался на турнир \"{tournament['name']}\""
+                text=f'<a href="tg://user?id={user.id}">{display_name}</a> записался на турнир "{tournament["name"]}"',
+                parse_mode="HTML"
             )
+
+        admin_text = f'<a href="tg://user?id={user.id}">{display_name}</a>'
+        if user.username:
+            admin_text += f" (@{user.username})"
+        admin_text += f' записался на турнир "{tournament["name"]}"'
 
         await bot.send_message(
             chat_id=ADMIN_ID,
-            text=f"{display_name} (@{user.username or 'нет username'}) записался на турнир \"{tournament['name']}\""
+            text=admin_text,
+            parse_mode="HTML"
         )
     else:
         await callback.answer("Вы уже записаны!", show_alert=True)
