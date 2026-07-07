@@ -15,6 +15,10 @@ router = Router()
 
 @router.message(CommandStart())
 async def start(message: Message):
+    configured = await get_chat_id()
+    if message.chat.type != "private" and str(message.chat.id) != str(configured):
+        return
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="События", callback_data="user_events")],
         [InlineKeyboardButton(text="Голосования", callback_data="user_polls")],
@@ -43,6 +47,10 @@ async def help_cmd(message: Message):
 
 @router.message(Command("events"))
 async def events_cmd(message: Message):
+    configured = await get_chat_id()
+    if message.chat.type != "private" and str(message.chat.id) != str(configured):
+        return
+
     events = await get_events(message.chat.id)
 
     if not events:
@@ -58,6 +66,10 @@ async def events_cmd(message: Message):
 
 @router.message(Command("polls"))
 async def polls_cmd(message: Message):
+    configured = await get_chat_id()
+    if message.chat.type != "private" and str(message.chat.id) != str(configured):
+        return
+
     polls = await get_active_polls(message.chat.id)
 
     if not polls:
@@ -177,6 +189,10 @@ async def user_help(callback: CallbackQuery):
 
 @router.message(Command("tournaments"))
 async def tournaments_cmd(message: Message):
+    configured = await get_chat_id()
+    if message.chat.type != "private" and str(message.chat.id) != str(configured):
+        return
+
     tournaments = await get_active_tournaments(message.chat.id)
 
     if not tournaments:
