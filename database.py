@@ -79,6 +79,15 @@ async def init_db():
             )
         """)
         await db.execute("""
+            CREATE TABLE IF NOT EXISTS chat_members (
+                user_id INTEGER PRIMARY KEY,
+                chat_id INTEGER NOT NULL,
+                username TEXT,
+                display_name TEXT,
+                last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute("""
             CREATE TABLE IF NOT EXISTS tournament_participants (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 tournament_id INTEGER NOT NULL,
@@ -142,6 +151,35 @@ async def get_chat_id():
     return await get_setting("chat_id")
 
 
+async def track_chat_member(user_id, chat_id, username=None, display_name=None):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO chat_members (user_id, chat_id, username, display_name, last_seen) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+            (user_id, chat_id, username, display_name)
+        )
+        await db.commit()
+
+
+async def get_chat_members(chat_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM chat_members WHERE chat_id = ? ORDER BY last_seen DESC",
+            (chat_id,)
+        )
+        return await cursor.fetchall()
+
+
+async def get_active_polls_for_event(event_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM polls WHERE event_id = ? AND is_active = 1",
+            (event_id,)
+        )
+        return await cursor.fetchall()
+
+
 async def add_event(title, description, event_date, created_by, chat_id, message_id=None, image_file_id=None):
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute(
@@ -173,6 +211,16 @@ async def delete_event(event_id):
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("DELETE FROM events WHERE id = ?", (event_id,))
         await db.commit()
+
+
+async def get_event_poll(event_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM polls WHERE event_id = ? AND poll_type = 'event' LIMIT 1",
+            (event_id,)
+        )
+        return await cursor.fetchone()
 
 
 async def update_event_message_id(event_id, message_id):

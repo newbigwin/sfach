@@ -2,14 +2,14 @@ import asyncio
 from datetime import datetime, timedelta
 
 from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from config import ADMIN_ID
 from database import (
-    add_event, get_events, delete_event, update_event_message_id,
+    add_event, get_events, delete_event, update_event_message_id, get_event_poll,
     add_poll, get_active_polls, get_poll, vote, get_poll_results, get_poll_votes,
     close_poll, update_poll_message_id, get_event,
     create_tournament, get_tournament, get_active_tournaments, start_tournament,
@@ -17,7 +17,8 @@ from database import (
     get_tournament_prizes, set_tournament_prize, remove_tournament_prize,
     create_match, get_match, set_match_winner, get_tournament_matches,
     get_tournament_standings, delete_tournament, update_tournament_message_id,
-    set_setting, get_setting, get_chat_id
+    set_setting, get_setting, get_chat_id,
+    track_chat_member, get_chat_members
 )
 
 router = Router()
@@ -567,7 +568,11 @@ async def list_events(callback: CallbackQuery):
     for event in events:
         kb_buttons.append([
             InlineKeyboardButton(
-                text=f"Удалить: {event['title'][:20]}",
+                text=f"Голоса: {event['title'][:25]}",
+                callback_data=f"view_event_votes_{event['id']}"
+            ),
+            InlineKeyboardButton(
+                text=f"Удалить",
                 callback_data=f"delete_event_{event['id']}"
             )
         ])
@@ -575,6 +580,58 @@ async def list_events(callback: CallbackQuery):
     kb_buttons.append([InlineKeyboardButton(text="Назад", callback_data="admin_events")])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
     await callback.message.answer("События:", reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("view_event_votes_"))
+async def view_event_votes_handler(callback: CallbackQuery, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    event_id = int(callback.data.split("_")[3])
+    event = await get_event(event_id)
+    if not event:
+        await callback.answer("Событие не найдено!", show_alert=True)
+        return
+
+    event_poll = await get_event_poll(event_id)
+    if not event_poll:
+        await callback.message.answer("Голосование ещё не начато.")
+        await callback.answer()
+        return
+
+    votes = await get_poll_votes(event_poll['id'])
+    if not votes:
+        await callback.message.answer("Пока никто не проголосовал.")
+        await callback.answer()
+        return
+
+    options = event_poll['options'].split("|")
+    votes_by_option = {}
+    for v in votes:
+        idx = v['option_index']
+        if idx not in votes_by_option:
+            votes_by_option[idx] = []
+        votes_by_option[idx].append(v['user_id'])
+
+    text = f"Голосование по событию: {event['title']}\n\n"
+
+    for i, opt in enumerate(options):
+        voters = votes_by_option.get(i, [])
+        text += f"📌 {opt} ({len(voters)}):\n"
+        if voters:
+            for uid in voters:
+                text += f'  • <a href="tg://user?id={uid}">{uid}</a>\n'
+        else:
+            text += "  — никто\n"
+        text += "\n"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Назад", callback_data="list_events")]
+    ])
+
+    await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
 
 
@@ -1045,20 +1102,17 @@ async def mute_menu(callback: CallbackQuery):
 
 async def do_mute(bot: Bot, chat_id: int, until_date=None):
     muted_count = 0
+    members = await get_chat_members(chat_id)
 
-    async for member in bot.get_chat_members(chat_id):
-        if member.user.id == ADMIN_ID:
-            continue
-        if member.status in ("creator", "administrator"):
-            continue
-        if member.user.is_bot:
+    for member in members:
+        if member['user_id'] == ADMIN_ID:
             continue
 
         try:
             await bot.restrict_chat_member(
                 chat_id=chat_id,
-                user_id=member.user.id,
-                permissions={"can_send_messages": False},
+                user_id=member['user_id'],
+                permissions=ChatPermissions(can_send_messages=False),
                 until_date=until_date
             )
             muted_count += 1
@@ -1070,25 +1124,22 @@ async def do_mute(bot: Bot, chat_id: int, until_date=None):
 
 async def do_unmute(bot: Bot, chat_id: int):
     unmuted_count = 0
+    members = await get_chat_members(chat_id)
 
-    async for member in bot.get_chat_members(chat_id):
-        if member.user.id == ADMIN_ID:
-            continue
-        if member.status in ("creator", "administrator"):
-            continue
-        if member.user.is_bot:
+    for member in members:
+        if member['user_id'] == ADMIN_ID:
             continue
 
         try:
             await bot.restrict_chat_member(
                 chat_id=chat_id,
-                user_id=member.user.id,
-                permissions={
-                    "can_send_messages": True,
-                    "can_send_media_messages": True,
-                    "can_send_other_messages": True,
-                    "can_add_web_page_previews": True,
-                }
+                user_id=member['user_id'],
+                permissions=ChatPermissions(
+                    can_send_messages=True,
+                    can_send_media_messages=True,
+                    can_send_other_messages=True,
+                    can_add_web_page_previews=True,
+                )
             )
             unmuted_count += 1
         except Exception:
@@ -1179,23 +1230,7 @@ async def summon_all(callback: CallbackQuery, bot: Bot):
         await callback.answer()
         return
 
-    members = []
-
-    try:
-        async for member in bot.get_chat_members(chat_id):
-            if member.user.id == ADMIN_ID:
-                continue
-            if member.user.is_bot:
-                continue
-            if member.status in ("creator", "administrator"):
-                continue
-
-            name = member.user.full_name or member.user.username or str(member.user.id)
-            members.append((member.user.id, name))
-    except Exception as e:
-        await callback.message.answer(f"Ошибка при получении участников: {e}")
-        await callback.answer()
-        return
+    members = await get_chat_members(chat_id)
 
     if not members:
         await callback.message.answer("Нет участников.")
@@ -1203,8 +1238,9 @@ async def summon_all(callback: CallbackQuery, bot: Bot):
         return
 
     mentions = []
-    for uid, name in members[:50]:
-        mentions.append(f'<a href="tg://user?id={uid}">{name}</a>')
+    for m in members[:50]:
+        name = m['display_name'] or m['username'] or str(m['user_id'])
+        mentions.append(f'<a href="tg://user?id={m["user_id"]}">{name}</a>')
 
     await bot.send_message(
         chat_id=chat_id,

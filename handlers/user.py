@@ -7,10 +7,23 @@ from database import (
     get_events, get_active_polls, get_poll, vote, get_poll_results,
     get_active_tournaments, get_tournament, join_tournament, leave_tournament,
     get_tournament_participants, get_participant_count, get_tournament_standings,
-    get_setting, get_chat_id
+    get_setting, get_chat_id, track_chat_member
 )
 
 router = Router()
+
+
+@router.message()
+async def track_user(message: Message):
+    if message.from_user and message.chat.type != "private":
+        chat_id = await get_chat_id()
+        if chat_id and str(message.chat.id) == str(chat_id):
+            await track_chat_member(
+                user_id=message.from_user.id,
+                chat_id=message.chat.id,
+                username=message.from_user.username,
+                display_name=message.from_user.full_name
+            )
 
 
 @router.message(CommandStart())
