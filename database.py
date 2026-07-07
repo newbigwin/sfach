@@ -744,6 +744,66 @@ async def get_known_users_count():
         return row[0]
 
 
+async def get_bot_stats():
+    async with aiosqlite.connect(DB_NAME) as db:
+        stats = {}
+        cursor = await db.execute("SELECT COUNT(*) FROM known_users")
+        row = await cursor.fetchone()
+        stats['total_users'] = row[0]
+
+        cursor = await db.execute("SELECT COUNT(*) FROM tournaments")
+        row = await cursor.fetchone()
+        stats['total_tournaments'] = row[0]
+
+        cursor = await db.execute("SELECT COUNT(*) FROM matches")
+        row = await cursor.fetchone()
+        stats['total_matches'] = row[0]
+
+        cursor = await db.execute("SELECT COUNT(*) FROM events")
+        row = await cursor.fetchone()
+        stats['total_events'] = row[0]
+
+        cursor = await db.execute("SELECT COUNT(*) FROM polls")
+        row = await cursor.fetchone()
+        stats['total_polls'] = row[0]
+
+        cursor = await db.execute("SELECT COUNT(*) FROM bets WHERE resolved = 1")
+        row = await cursor.fetchone()
+        stats['total_bets'] = row[0]
+
+        cursor = await db.execute("SELECT COUNT(*) FROM clans")
+        row = await cursor.fetchone()
+        stats['total_clans'] = row[0]
+
+        return stats
+
+
+async def get_tournament_analytics():
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT winner_id, COUNT(*) as wins FROM tournaments WHERE winner_id IS NOT NULL GROUP BY winner_id ORDER BY wins DESC LIMIT 10"
+        )
+        winners = await cursor.fetchall()
+
+        cursor = await db.execute(
+            "SELECT user_id, COUNT(*) as count FROM tournament_participants GROUP BY user_id ORDER BY count DESC LIMIT 10"
+        )
+        participants = await cursor.fetchall()
+
+        return {"top_winners": winners, "top_participants": participants}
+
+
+async def get_match_stats():
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT winner_id, COUNT(*) as wins FROM matches WHERE winner_id IS NOT NULL GROUP BY winner_id ORDER BY wins DESC LIMIT 10"
+        )
+        winners = await cursor.fetchall()
+        return {"top_match_winners": winners}
+
+
 async def create_clan(name, tag, chat_id, leader_id, description=""):
     async with aiosqlite.connect(DB_NAME) as db:
         try:

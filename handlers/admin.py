@@ -23,7 +23,8 @@ from database import (
     auto_generate_bracket,
     create_recurring_event, get_recurring_events, delete_recurring_event,
     resolve_bets, get_match_bets, add_quiz,
-    get_all_known_users, get_known_users_count
+    get_all_known_users, get_known_users_count,
+    get_bot_stats, get_tournament_analytics, get_match_stats
 )
 
 router = Router()
@@ -75,6 +76,7 @@ def admin_keyboard():
         [InlineKeyboardButton(text="Напоминания", callback_data="admin_reminders")],
         [InlineKeyboardButton(text="Викторины", callback_data="admin_quizzes")],
         [InlineKeyboardButton(text="Рассылка", callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text="Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="Утихомирить всех", callback_data="mute_menu")],
         [InlineKeyboardButton(text="Созвать всех", callback_data="summon_all")],
         [InlineKeyboardButton(text="Мануал", callback_data="admin_manual")],
@@ -2741,3 +2743,32 @@ async def process_broadcast(message: Message, state: FSMContext):
         f"Отправлено: {sent}\n"
         f"Ошибок: {failed}"
     )
+
+
+@router.callback_query(F.data == "admin_stats")
+async def admin_stats_menu(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    stats = await get_bot_stats()
+    t_stats = await get_tournament_analytics()
+
+    text = (
+        f"Статистика бота:\n\n"
+        f"Пользователей: {stats['total_users']}\n"
+        f"Турниров: {stats['total_tournaments']}\n"
+        f"Матчей: {stats['total_matches']}\n"
+        f"Событий: {stats['total_events']}\n"
+        f"Голосований: {stats['total_polls']}\n"
+        f"Ставок: {stats['total_bets']}\n"
+        f"Кланов: {stats['total_clans']}\n"
+    )
+
+    if t_stats['top_winners']:
+        text += "\nТоп победителей:\n"
+        for i, w in enumerate(t_stats['top_winners'][:3], 1):
+            text += f"  {i}. ID {w['winner_id']} — {w['wins']} побед\n"
+
+    await callback.message.answer(text)
+    await callback.answer()

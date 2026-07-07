@@ -15,7 +15,8 @@ from database import (
     get_clan_members, get_clans, get_clan_member_count,
     get_user_coins, claim_daily, place_bet, get_match_bets,
     add_quiz, get_random_quiz, place_prediction, get_leaderboard_coins,
-    get_tournament_matches
+    get_tournament_matches, get_tournament_analytics, get_match_stats,
+    get_known_users_count, ACHIEVEMENTS
 )
 
 router = Router()
@@ -834,3 +835,64 @@ async def cmd_bet(message: Message):
         )
     else:
         await message.answer("Недостаточно монет или ошибка!")
+
+
+@router.message(Command("mystats"))
+async def cmd_mystats(message: Message):
+    user_id = message.from_user.id
+    stats = await get_player_stats(user_id)
+    coins = await get_user_coins(user_id)
+    elo_player = await get_or_create_player(user_id)
+
+    if not stats:
+        await message.answer("Пока нет статистики. Сыграй хотя бы один турнир!")
+        return
+
+    text = (
+        f"Статистика {message.from_user.first_name}:\n\n"
+        f"ELO: {elo_player['elo']}\n"
+        f"Побед: {stats['wins']} | Поражений: {stats['losses']}\n"
+        f"Серия побед: {stats['win_streak']} (макс: {stats['max_win_streak']})\n"
+        f"Турниров сыграно: {stats['tournaments_played']}\n"
+        f"Турниров выиграно: {stats['tournaments_won']}\n"
+        f"Монеты: {coins['balance']}"
+    )
+    await message.answer(text)
+
+
+@router.message(Command("top"))
+async def cmd_top(message: Message):
+    leaders = await get_leaderboard(10)
+    if not leaders:
+        await message.answer("Пока нет данных.")
+        return
+
+    text = "Топ по ELO:\n\n"
+    medals = ["🥇", "🥈", "🥉"]
+    for i, l in enumerate(leaders):
+        medal = medals[i] if i < 3 else f"{i+1}."
+        text += f"{medal} {l['display_name'] or l['username'] or l['user_id']} - ELO {l['elo']}\n"
+    await message.answer(text)
+
+
+@router.message(Command("tournament_stats"))
+async def cmd_tournament_stats(message: Message):
+    t_stats = await get_tournament_analytics()
+    m_stats = await get_match_stats()
+
+    text = "Статистика турниров:\n\n"
+
+    if t_stats['top_winners']:
+        text += "Победители турниров:\n"
+        for i, w in enumerate(t_stats['top_winners'][:5], 1):
+            text += f"  {i}. ID {w['winner_id']} — {w['wins']} побед\n"
+
+    if m_stats['top_match_winners']:
+        text += "\nПобедители матчей:\n"
+        for i, w in enumerate(m_stats['top_match_winners'][:5], 1):
+            text += f"  {i}. ID {w['winner_id']} — {w['wins']} побед\n"
+
+    if not t_stats['top_winners'] and not m_stats['top_match_winners']:
+        text += "Пока нет данных."
+
+    await message.answer(text)
