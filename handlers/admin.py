@@ -14,7 +14,8 @@ from database import (
     create_tournament, get_tournament, get_active_tournaments, start_tournament,
     get_tournament_participants, get_participant_count, finish_tournament,
     create_match, get_match, set_match_winner, get_tournament_matches,
-    get_tournament_standings, delete_tournament, set_setting, get_setting
+    get_tournament_standings, delete_tournament, set_setting, get_setting,
+    get_chat_id
 )
 
 router = Router()
@@ -24,6 +25,7 @@ class CreateEvent(StatesGroup):
     title = State()
     description = State()
     event_date = State()
+    image = State()
     confirm = State()
     editing = State()
 
@@ -32,6 +34,8 @@ class CreatePoll(StatesGroup):
     question = State()
     options = State()
     poll_type = State()
+    image = State()
+    editing = State()
     confirm = State()
 
 
@@ -39,6 +43,7 @@ class CreateTournament(StatesGroup):
     name = State()
     description = State()
     max_participants = State()
+    image = State()
     confirm = State()
     editing = State()
 
@@ -51,10 +56,6 @@ class CreateMatch(StatesGroup):
 
 def is_admin(user_id: int) -> bool:
     return user_id == ADMIN_ID
-
-
-async def get_chat_id():
-    return await get_setting("chat_id")
 
 
 def admin_keyboard():
@@ -236,6 +237,34 @@ async def event_date(message: Message, state: FSMContext):
         return
 
     await state.update_data(event_date=message.text)
+    await message.answer(
+        "Отправьте изображение для поста или нажмите 'Пропустить':",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Пропустить", callback_data="skip_event_image")]
+        ])
+    )
+    await state.set_state(CreateEvent.image)
+
+
+@router.callback_query(F.data == "skip_event_image", CreateEvent.image)
+async def skip_event_image(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await callback.message.answer("Пропускаю изображение...")
+    await show_event_preview(callback, state)
+    await callback.answer()
+
+
+@router.message(CreateEvent.image, F.photo)
+async def event_image(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    photo = message.photo[-1]
+    await state.update_data(image_file_id=photo.file_id)
+    await message.answer("Изображение добавлено!")
     await show_event_preview(message, state)
 
 
@@ -249,6 +278,7 @@ async def show_event_preview(message_or_callback, state: FSMContext):
         ],
         [
             InlineKeyboardButton(text="Редактировать дату", callback_data="edit_event_date"),
+            InlineKeyboardButton(text="Изображение", callback_data="edit_event_image"),
         ],
         [
             InlineKeyboardButton(text="Опубликовать", callback_data="confirm_event"),
@@ -260,16 +290,72 @@ async def show_event_preview(message_or_callback, state: FSMContext):
         f"Предпросмотр события:\n\n"
         f"Название: {data['title']}\n"
         f"Описание: {data['description']}\n"
-        f"Дата: {data['event_date']}\n\n"
+        f"Дата: {data['event_date']}\n"
+        f"Изображение: {'да' if data.get('image_file_id') else 'нет'}\n\n"
         f"Нажмите 'Опубликовать' или отредактируйте."
     )
 
     if isinstance(message_or_callback, Message):
-        await message_or_callback.answer(text, reply_markup=kb)
+        if data.get('image_file_id'):
+            await message_or_callback.answer_photo(
+                photo=data['image_file_id'],
+                caption=text,
+                reply_markup=kb
+            )
+        else:
+            await message_or_callback.answer(text, reply_markup=kb)
     else:
-        await message_or_callback.message.edit_text(text, reply_markup=kb)
+        if data.get('image_file_id'):
+            await message_or_callback.message.delete()
+            await message_or_callback.message.answer_photo(
+                photo=data['image_file_id'],
+                caption=text,
+                reply_markup=kb
+            )
+        else:
+            await message_or_callback.message.edit_text(text, reply_markup=kb)
 
     await state.set_state(CreateEvent.confirm)
+
+
+@router.callback_query(F.data == "edit_event_image", CreateEvent.confirm)
+async def edit_event_image(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await callback.message.answer(
+        "Отправьте новое изображение или нажмите 'Удалить':",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Удалить изображение", callback_data="remove_event_image")]
+        ])
+    )
+    await state.set_state(CreateEvent.editing)
+    await state.update_data(edit_field="image")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "remove_event_image", CreateEvent.editing)
+async def remove_event_image(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await state.update_data(image_file_id=None)
+    await callback.message.answer("Изображение удалено!")
+    await show_event_preview(callback, state)
+    await callback.answer()
+
+
+@router.message(CreateEvent.editing, F.photo)
+async def event_editing_image(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    photo = message.photo[-1]
+    await state.update_data(image_file_id=photo.file_id)
+    await message.answer("Изображение обновлено!")
+    await show_event_preview(message, state)
 
 
 @router.callback_query(F.data == "edit_event_title", CreateEvent.confirm)
@@ -338,23 +424,34 @@ async def confirm_event(callback: CallbackQuery, state: FSMContext, bot: Bot):
         description=data['description'],
         event_date=data['event_date'],
         created_by=callback.from_user.id,
-        chat_id=chat_id
+        chat_id=chat_id,
+        image_file_id=data.get('image_file_id')
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Проголосовать", callback_data=f"vote_event_{event_id}")]
     ])
 
-    await bot.send_message(
-        chat_id=chat_id,
-        text=(
-            f"{data['title']}\n\n"
-            f"{data['description']}\n\n"
-            f"Дата: {data['event_date']}\n\n"
-            f"Голосуйте, если хотите участвовать:"
-        ),
-        reply_markup=kb
+    text = (
+        f"{data['title']}\n\n"
+        f"{data['description']}\n\n"
+        f"Дата: {data['event_date']}\n\n"
+        f"Голосуйте, если хотите участвовать:"
     )
+
+    if data.get('image_file_id'):
+        await bot.send_photo(
+            chat_id=chat_id,
+            photo=data['image_file_id'],
+            caption=text,
+            reply_markup=kb
+        )
+    else:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=kb
+        )
 
     await state.clear()
     await callback.message.answer("Событие опубликовано в чате!")
@@ -505,19 +602,117 @@ async def poll_options(message: Message, state: FSMContext):
     await state.update_data(options=options)
     data = await state.get_data()
 
+    await message.answer(
+        "Отправьте изображение для поста или нажмите 'Пропустить':",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Пропустить", callback_data="skip_poll_image")]
+        ])
+    )
+    await state.set_state(CreatePoll.image)
+
+
+@router.callback_query(F.data == "skip_poll_image", CreatePoll.image)
+async def skip_poll_image(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await callback.message.answer("Пропускаю изображение...")
+    await show_poll_preview(callback, state)
+    await callback.answer()
+
+
+@router.message(CreatePoll.image, F.photo)
+async def poll_image(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    photo = message.photo[-1]
+    await state.update_data(image_file_id=photo.file_id)
+    await message.answer("Изображение добавлено!")
+    await show_poll_preview(message, state)
+
+
+async def show_poll_preview(message_or_callback, state: FSMContext):
+    data = await state.get_data()
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="Создать", callback_data="confirm_poll"),
+            InlineKeyboardButton(text="Изображение", callback_data="edit_poll_image"),
             InlineKeyboardButton(text="Отмена", callback_data="cancel_poll"),
         ]
     ])
 
-    options_text = "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options)])
-    await message.answer(
-        f"Вопрос: {data['question']}\n\nВарианты:\n{options_text}",
-        reply_markup=kb
+    options_text = "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(data['options'])])
+    text = (
+        f"Предпросмотр опроса:\n\n"
+        f"Вопрос: {data['question']}\n\n"
+        f"Варианты:\n{options_text}\n\n"
+        f"Изображение: {'да' if data.get('image_file_id') else 'нет'}"
     )
+
+    if isinstance(message_or_callback, Message):
+        if data.get('image_file_id'):
+            await message_or_callback.answer_photo(
+                photo=data['image_file_id'],
+                caption=text,
+                reply_markup=kb
+            )
+        else:
+            await message_or_callback.answer(text, reply_markup=kb)
+    else:
+        if data.get('image_file_id'):
+            await message_or_callback.message.delete()
+            await message_or_callback.message.answer_photo(
+                photo=data['image_file_id'],
+                caption=text,
+                reply_markup=kb
+            )
+        else:
+            await message_or_callback.message.edit_text(text, reply_markup=kb)
+
     await state.set_state(CreatePoll.confirm)
+
+
+@router.callback_query(F.data == "edit_poll_image", CreatePoll.confirm)
+async def edit_poll_image(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await callback.message.answer(
+        "Отправьте новое изображение или нажмите 'Удалить':",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Удалить изображение", callback_data="remove_poll_image")]
+        ])
+    )
+    await state.set_state(CreatePoll.editing)
+    await state.update_data(edit_field="image")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "remove_poll_image", CreatePoll.editing)
+async def remove_poll_image(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await state.update_data(image_file_id=None)
+    await callback.message.answer("Изображение удалено!")
+    await show_poll_preview(callback, state)
+    await callback.answer()
+
+
+@router.message(CreatePoll.editing, F.photo)
+async def poll_editing_image(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    photo = message.photo[-1]
+    await state.update_data(image_file_id=photo.file_id)
+    await message.answer("Изображение обновлено!")
+    await show_poll_preview(message, state)
 
 
 @router.callback_query(F.data == "confirm_poll", CreatePoll.confirm)
@@ -539,7 +734,8 @@ async def confirm_poll(callback: CallbackQuery, state: FSMContext, bot: Bot):
         options=data['options'],
         poll_type=data['poll_type'],
         created_by=callback.from_user.id,
-        chat_id=chat_id
+        chat_id=chat_id,
+        image_file_id=data.get('image_file_id')
     )
 
     kb_buttons = []
@@ -548,11 +744,21 @@ async def confirm_poll(callback: CallbackQuery, state: FSMContext, bot: Bot):
 
     kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
 
-    await bot.send_message(
-        chat_id=chat_id,
-        text=f"Голосование: {data['question']}",
-        reply_markup=kb
-    )
+    text = f"Голосование: {data['question']}"
+
+    if data.get('image_file_id'):
+        await bot.send_photo(
+            chat_id=chat_id,
+            photo=data['image_file_id'],
+            caption=text,
+            reply_markup=kb
+        )
+    else:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=kb
+        )
 
     await state.clear()
     await callback.message.answer("Голосование опубликовано в чате!")
@@ -616,7 +822,13 @@ async def list_polls(callback: CallbackQuery):
         await callback.answer("Нет доступа!", show_alert=True)
         return
 
-    polls = await get_active_polls(0)
+    chat_id = await get_chat_id()
+    if not chat_id:
+        await callback.message.answer("Сначала настройте чат командой /setchat в группе!")
+        await callback.answer()
+        return
+
+    polls = await get_active_polls(chat_id)
 
     if not polls:
         await callback.message.answer("Нет активных голосований.")
@@ -889,6 +1101,34 @@ async def tournament_max_participants(message: Message, state: FSMContext):
         return
 
     await state.update_data(max_participants=max_p)
+    await message.answer(
+        "Отправьте изображение для поста или нажмите 'Пропустить':",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Пропустить", callback_data="skip_tourney_image")]
+        ])
+    )
+    await state.set_state(CreateTournament.image)
+
+
+@router.callback_query(F.data == "skip_tourney_image", CreateTournament.image)
+async def skip_tourney_image(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await callback.message.answer("Пропускаю изображение...")
+    await show_tournament_preview(callback, state)
+    await callback.answer()
+
+
+@router.message(CreateTournament.image, F.photo)
+async def tournament_image(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    photo = message.photo[-1]
+    await state.update_data(image_file_id=photo.file_id)
+    await message.answer("Изображение добавлено!")
     await show_tournament_preview(message, state)
 
 
@@ -902,6 +1142,7 @@ async def show_tournament_preview(message_or_callback, state: FSMContext):
         ],
         [
             InlineKeyboardButton(text="Редактировать макс.", callback_data="edit_tourney_max"),
+            InlineKeyboardButton(text="Изображение", callback_data="edit_tourney_image"),
         ],
         [
             InlineKeyboardButton(text="Опубликовать", callback_data="confirm_tournament"),
@@ -913,16 +1154,72 @@ async def show_tournament_preview(message_or_callback, state: FSMContext):
         f"Предпросмотр турнира:\n\n"
         f"Название: {data['name']}\n"
         f"Описание: {data['description']}\n"
-        f"Макс. участников: {data['max_participants']}\n\n"
+        f"Макс. участников: {data['max_participants']}\n"
+        f"Изображение: {'да' if data.get('image_file_id') else 'нет'}\n\n"
         f"Нажмите 'Опубликовать' или отредактируйте."
     )
 
     if isinstance(message_or_callback, Message):
-        await message_or_callback.answer(text, reply_markup=kb)
+        if data.get('image_file_id'):
+            await message_or_callback.answer_photo(
+                photo=data['image_file_id'],
+                caption=text,
+                reply_markup=kb
+            )
+        else:
+            await message_or_callback.answer(text, reply_markup=kb)
     else:
-        await message_or_callback.message.edit_text(text, reply_markup=kb)
+        if data.get('image_file_id'):
+            await message_or_callback.message.delete()
+            await message_or_callback.message.answer_photo(
+                photo=data['image_file_id'],
+                caption=text,
+                reply_markup=kb
+            )
+        else:
+            await message_or_callback.message.edit_text(text, reply_markup=kb)
 
     await state.set_state(CreateTournament.confirm)
+
+
+@router.callback_query(F.data == "edit_tourney_image", CreateTournament.confirm)
+async def edit_tourney_image(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await callback.message.answer(
+        "Отправьте новое изображение или нажмите 'Удалить':",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Удалить изображение", callback_data="remove_tourney_image")]
+        ])
+    )
+    await state.set_state(CreateTournament.editing)
+    await state.update_data(edit_field="image")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "remove_tourney_image", CreateTournament.editing)
+async def remove_tourney_image(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await state.update_data(image_file_id=None)
+    await callback.message.answer("Изображение удалено!")
+    await show_tournament_preview(callback, state)
+    await callback.answer()
+
+
+@router.message(CreateTournament.editing, F.photo)
+async def tournament_editing_image(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    photo = message.photo[-1]
+    await state.update_data(image_file_id=photo.file_id)
+    await message.answer("Изображение обновлено!")
+    await show_tournament_preview(message, state)
 
 
 @router.callback_query(F.data == "edit_tourney_name", CreateTournament.confirm)
@@ -1004,23 +1301,34 @@ async def confirm_tournament(callback: CallbackQuery, state: FSMContext, bot: Bo
         description=data['description'],
         max_participants=data['max_participants'],
         created_by=callback.from_user.id,
-        chat_id=chat_id
+        chat_id=chat_id,
+        image_file_id=data.get('image_file_id')
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Записаться", callback_data=f"join_tournament_{tournament_id}")]
     ])
 
-    await bot.send_message(
-        chat_id=chat_id,
-        text=(
-            f"{data['name']}\n\n"
-            f"{data['description']}\n\n"
-            f"Макс. участников: {data['max_participants']}\n\n"
-            f"Записывайтесь!"
-        ),
-        reply_markup=kb
+    text = (
+        f"{data['name']}\n\n"
+        f"{data['description']}\n\n"
+        f"Макс. участников: {data['max_participants']}\n\n"
+        f"Записывайтесь!"
     )
+
+    if data.get('image_file_id'):
+        await bot.send_photo(
+            chat_id=chat_id,
+            photo=data['image_file_id'],
+            caption=text,
+            reply_markup=kb
+        )
+    else:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=kb
+        )
 
     await state.clear()
     await callback.message.answer("Турнир опубликован в чате!")

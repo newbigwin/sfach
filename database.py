@@ -16,6 +16,7 @@ async def init_db():
                 title TEXT NOT NULL,
                 description TEXT,
                 event_date TEXT,
+                image_file_id TEXT,
                 created_by INTEGER,
                 chat_id INTEGER,
                 message_id INTEGER,
@@ -29,6 +30,7 @@ async def init_db():
                 options TEXT NOT NULL,
                 poll_type TEXT DEFAULT 'general',
                 event_id INTEGER,
+                image_file_id TEXT,
                 created_by INTEGER,
                 chat_id INTEGER,
                 message_id INTEGER,
@@ -55,6 +57,7 @@ async def init_db():
                 description TEXT,
                 max_participants INTEGER DEFAULT 16,
                 status TEXT DEFAULT 'registration',
+                image_file_id TEXT,
                 created_by INTEGER,
                 chat_id INTEGER,
                 message_id INTEGER,
@@ -110,11 +113,15 @@ async def get_setting(key, default=None):
         return row[0] if row else default
 
 
-async def add_event(title, description, event_date, created_by, chat_id, message_id=None):
+async def get_chat_id():
+    return await get_setting("chat_id")
+
+
+async def add_event(title, description, event_date, created_by, chat_id, message_id=None, image_file_id=None):
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute(
-            "INSERT INTO events (title, description, event_date, created_by, chat_id, message_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (title, description, event_date, created_by, chat_id, message_id)
+            "INSERT INTO events (title, description, event_date, created_by, chat_id, message_id, image_file_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (title, description, event_date, created_by, chat_id, message_id, image_file_id)
         )
         await db.commit()
         return cursor.lastrowid
@@ -143,12 +150,12 @@ async def delete_event(event_id):
         await db.commit()
 
 
-async def add_poll(question, options, poll_type, created_by, chat_id, event_id=None, message_id=None):
+async def add_poll(question, options, poll_type, created_by, chat_id, event_id=None, message_id=None, image_file_id=None):
     async with aiosqlite.connect(DB_NAME) as db:
         options_str = "|".join(options)
         cursor = await db.execute(
-            "INSERT INTO polls (question, options, poll_type, event_id, created_by, chat_id, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (question, options_str, poll_type, event_id, created_by, chat_id, message_id)
+            "INSERT INTO polls (question, options, poll_type, event_id, created_by, chat_id, message_id, image_file_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (question, options_str, poll_type, event_id, created_by, chat_id, message_id, image_file_id)
         )
         await db.commit()
         return cursor.lastrowid
@@ -199,11 +206,11 @@ async def close_poll(poll_id):
         await db.commit()
 
 
-async def create_tournament(name, description, max_participants, created_by, chat_id):
+async def create_tournament(name, description, max_participants, created_by, chat_id, image_file_id=None):
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute(
-            "INSERT INTO tournaments (name, description, max_participants, created_by, chat_id) VALUES (?, ?, ?, ?, ?)",
-            (name, description, max_participants, created_by, chat_id)
+            "INSERT INTO tournaments (name, description, max_participants, created_by, chat_id, image_file_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (name, description, max_participants, created_by, chat_id, image_file_id)
         )
         await db.commit()
         return cursor.lastrowid

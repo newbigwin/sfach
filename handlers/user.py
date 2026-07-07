@@ -7,7 +7,7 @@ from database import (
     get_events, get_active_polls, get_poll, vote, get_poll_results,
     get_active_tournaments, get_tournament, join_tournament, leave_tournament,
     get_tournament_participants, get_participant_count, get_tournament_standings,
-    get_setting
+    get_setting, get_chat_id
 )
 
 router = Router()
@@ -79,7 +79,13 @@ async def polls_cmd(message: Message):
 
 @router.callback_query(F.data == "user_events")
 async def user_events(callback: CallbackQuery):
-    events = await get_events(callback.message.chat.id)
+    chat_id = await get_chat_id()
+    if not chat_id:
+        await callback.message.answer("Чат не настроен.")
+        await callback.answer()
+        return
+
+    events = await get_events(chat_id)
 
     if not events:
         await callback.message.answer("Пока нет событий.")
@@ -96,7 +102,13 @@ async def user_events(callback: CallbackQuery):
 
 @router.callback_query(F.data == "user_polls")
 async def user_polls(callback: CallbackQuery):
-    polls = await get_active_polls(callback.message.chat.id)
+    chat_id = await get_chat_id()
+    if not chat_id:
+        await callback.message.answer("Чат не настроен.")
+        await callback.answer()
+        return
+
+    polls = await get_active_polls(chat_id)
 
     if not polls:
         await callback.message.answer("Нет активных голосований.")
@@ -187,7 +199,13 @@ async def tournaments_cmd(message: Message):
 
 @router.callback_query(F.data == "user_tournaments")
 async def user_tournaments(callback: CallbackQuery):
-    tournaments = await get_active_tournaments(callback.message.chat.id)
+    chat_id = await get_chat_id()
+    if not chat_id:
+        await callback.message.answer("Чат не настроен.")
+        await callback.answer()
+        return
+
+    tournaments = await get_active_tournaments(chat_id)
 
     if not tournaments:
         await callback.message.answer("Нет активных турниров.")
