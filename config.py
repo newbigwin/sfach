@@ -1,0 +1,4 @@
+ADMIN_ID = 7153815329
+BOT_TOKEN = "8308858430:AAFfVN7J-jO8ouJGgq0dzhc3YsRqjOQyzo0"
+
+DB_NAME = "shadow_bot.db"
