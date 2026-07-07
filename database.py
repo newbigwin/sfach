@@ -178,6 +178,21 @@ async def init_db():
                 UNIQUE(clan_id, user_id)
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS recurring_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                day_of_week INTEGER NOT NULL,
+                hour INTEGER NOT NULL,
+                minute INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                created_by INTEGER,
+                last_created TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         await db.commit()
 
         # Migration: add new columns to existing tables
@@ -415,6 +430,50 @@ async def check_and_award_achievements(user_id, chat_id):
             awarded.append("win_streak_10")
 
     return awarded
+
+
+async def create_recurring_event(chat_id, title, description, day_of_week, hour, minute, created_by):
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            "INSERT INTO recurring_events (chat_id, title, description, day_of_week, hour, minute, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (chat_id, title, description, day_of_week, hour, minute, created_by)
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_recurring_events(chat_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM recurring_events WHERE chat_id = ? AND is_active = 1",
+            (chat_id,)
+        )
+        return await cursor.fetchall()
+
+
+async def get_all_active_recurring_events():
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM recurring_events WHERE is_active = 1"
+        )
+        return await cursor.fetchall()
+
+
+async def delete_recurring_event(event_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("DELETE FROM recurring_events WHERE id = ?", (event_id,))
+        await db.commit()
+
+
+async def mark_recurring_event_created(event_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "UPDATE recurring_events SET last_created = CURRENT_TIMESTAMP WHERE id = ?",
+            (event_id,)
+        )
+        await db.commit()
 
 
 async def create_clan(name, tag, chat_id, leader_id, description=""):

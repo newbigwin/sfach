@@ -1,13 +1,17 @@
 import os
 import asyncio
 import logging
+from datetime import datetime
 from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 from config import BOT_TOKEN
-from database import init_db, get_pending_reminders, mark_reminder_sent
+from database import (
+    init_db, get_pending_reminders, mark_reminder_sent,
+    get_all_active_recurring_events, mark_recurring_event_created
+)
 from handlers import admin, user
 
 logging.basicConfig(
@@ -22,6 +26,7 @@ WEB_SERVER_HOST = "0.0.0.0"
 WEB_SERVER_PORT = int(os.getenv("PORT", 8000))
 
 reminder_task = None
+recurring_task = None
 
 
 async def check_reminders(bot: Bot):
@@ -44,18 +49,56 @@ async def check_reminders(bot: Bot):
         await asyncio.sleep(60)
 
 
+async def check_recurring_events(bot: Bot):
+    while True:
+        try:
+            now = datetime.now()
+            events = await get_all_active_recurring_events()
+            for event in events:
+                if (event['day_of_week'] == now.weekday() and
+                    event['hour'] == now.hour and
+                    event['minute'] == now.minute):
+
+                    last_created = event['last_created']
+                    if last_created:
+                        from datetime import timedelta
+                        last_dt = datetime.fromisoformat(last_created)
+                        if (now - last_dt) < timedelta(hours=1):
+                            continue
+
+                    try:
+                        text = f"{event['title']}"
+                        if event['description']:
+                            text += f"\n\n{event['description']}"
+
+                        await bot.send_message(
+                            chat_id=event['chat_id'],
+                            text=text
+                        )
+                        await mark_recurring_event_created(event['id'])
+                        logger.info(f"Recurring event created: {event['title']}")
+                    except Exception as e:
+                        logger.error(f"Failed to create recurring event: {e}")
+        except Exception as e:
+            logger.error(f"Recurring event check error: {e}")
+        await asyncio.sleep(60)
+
+
 async def on_startup(bot: Bot):
-    global reminder_task
+    global reminder_task, recurring_task
     await bot.set_webhook(f"{BASE_WEBHOOK_URL}{WEBHOOK_PATH}")
     await init_db()
     reminder_task = asyncio.create_task(check_reminders(bot))
+    recurring_task = asyncio.create_task(check_recurring_events(bot))
     logger.info(f"Бот запущен! Webhook: {BASE_WEBHOOK_URL}{WEBHOOK_PATH}")
 
 
 async def on_shutdown(bot: Bot):
-    global reminder_task
+    global reminder_task, recurring_task
     if reminder_task:
         reminder_task.cancel()
+    if recurring_task:
+        recurring_task.cancel()
     await bot.delete_webhook()
     logger.info("Бот остановлен.")
 

@@ -20,7 +20,8 @@ from database import (
     set_setting, get_setting, get_chat_id,
     track_chat_member, get_chat_members,
     add_reminder, delete_reminder,
-    auto_generate_bracket
+    auto_generate_bracket,
+    create_recurring_event, get_recurring_events, delete_recurring_event
 )
 
 router = Router()
@@ -173,9 +174,215 @@ async def admin_reminders_menu(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Создать напоминание", callback_data="create_reminder")],
         [InlineKeyboardButton(text="Активные напоминания", callback_data="list_reminders")],
+        [InlineKeyboardButton(text="Повторяющиеся события", callback_data="recurring_events")],
         [InlineKeyboardButton(text="Назад", callback_data="admin_panel")],
     ])
     await callback.message.answer("Напоминания:", reply_markup=kb)
+    await callback.answer()
+
+
+class CreateRecurringEvent(StatesGroup):
+    title = State()
+    description = State()
+    day_of_week = State()
+    time = State()
+    confirm = State()
+
+
+@router.callback_query(F.data == "recurring_events")
+async def recurring_events_menu(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Создать повторяющееся событие", callback_data="create_recurring")],
+        [InlineKeyboardButton(text="Список событий", callback_data="list_recurring")],
+        [InlineKeyboardButton(text="Назад", callback_data="admin_reminders")],
+    ])
+    await callback.message.answer("Повторяющиеся события:", reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "create_recurring")
+async def create_recurring_start(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await callback.message.answer("Введите название события:")
+    await state.set_state(CreateRecurringEvent.title)
+    await callback.answer()
+
+
+@router.message(CreateRecurringEvent.title)
+async def recurring_title(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    await state.update_data(title=message.text)
+    await message.answer("Введите описание (или 'пропустить'):")
+    await state.set_state(CreateRecurringEvent.description)
+
+
+@router.message(CreateRecurringEvent.description)
+async def recurring_desc(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    desc = message.text if message.text.lower() != "пропустить" else ""
+    await state.update_data(description=desc)
+
+    days = "0 - Пн, 1 - Вт, 2 - Ср, 3 - Чт, 4 - Пт, 5 - Сб, 6 - Вс"
+    await message.answer(f"День недели:\n{days}\n\nВведите число:")
+    await state.set_state(CreateRecurringEvent.day_of_week)
+
+
+@router.message(CreateRecurringEvent.day_of_week)
+async def recurring_day(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    try:
+        day = int(message.text)
+        if day < 0 or day > 6:
+            await message.answer("Введите число от 0 до 6:")
+            return
+    except ValueError:
+        await message.answer("Введите число:")
+        return
+
+    await state.update_data(day_of_week=day)
+    await message.answer("Введите время (ЧЧ:ММ), например 19:00:")
+    await state.set_state(CreateRecurringEvent.time)
+
+
+@router.message(CreateRecurringEvent.time)
+async def recurring_time(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    try:
+        hour, minute = message.text.split(":")
+        hour = int(hour)
+        minute = int(minute)
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            await message.answer("Неверное время. Формат: ЧЧ:ММ")
+            return
+    except Exception:
+        await message.answer("Неверный формат. Используйте ЧЧ:ММ:")
+        return
+
+    await state.update_data(hour=hour, minute=minute)
+
+    data = await state.get_data()
+    days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Создать", callback_data="confirm_recurring"),
+            InlineKeyboardButton(text="Отмена", callback_data="cancel_recurring"),
+        ]
+    ])
+    await message.answer(
+        f"Повторяющееся событие:\n\n"
+        f"Название: {data['title']}\n"
+        f"Описание: {data['description'] or 'нет'}\n"
+        f"День: {days[data['day_of_week']]}\n"
+        f"Время: {data['hour']:02d}:{data['minute']:02d}\n\n"
+        f"Создать?",
+        reply_markup=kb
+    )
+    await state.set_state(CreateRecurringEvent.confirm)
+
+
+@router.callback_query(F.data == "confirm_recurring", CreateRecurringEvent.confirm)
+async def confirm_recurring(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    chat_id = await get_chat_id()
+    if not chat_id:
+        await callback.message.answer("Сначала настройте чат командой /setchat в группе!")
+        await callback.answer()
+        return
+
+    data = await state.get_data()
+    await create_recurring_event(
+        chat_id=chat_id,
+        title=data['title'],
+        description=data['description'],
+        day_of_week=data['day_of_week'],
+        hour=data['hour'],
+        minute=data['minute'],
+        created_by=callback.from_user.id
+    )
+
+    days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    await state.clear()
+    await callback.message.answer(
+        f"Событие создано!\n"
+        f"Каждый {days[data['day_of_week']]} в {data['hour']:02d}:{data['minute']:02d}"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "cancel_recurring")
+async def cancel_recurring(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.answer("Создание отменено.")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "list_recurring")
+async def list_recurring(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    chat_id = await get_chat_id()
+    if not chat_id:
+        await callback.message.answer("Сначала настройте чат командой /setchat в группе!")
+        await callback.answer()
+        return
+
+    events = await get_recurring_events(chat_id)
+
+    if not events:
+        await callback.message.answer("Нет повторяющихся событий.")
+        await callback.answer()
+        return
+
+    days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    kb_buttons = []
+    for e in events:
+        kb_buttons.append([
+            InlineKeyboardButton(
+                text=f"{e['title'][:25]} ({days[e['day_of_week']]} {e['hour']:02d}:{e['minute']:02d})",
+                callback_data=f"noop"
+            ),
+            InlineKeyboardButton(
+                text="Удалить",
+                callback_data=f"delete_recurring_{e['id']}"
+            )
+        ])
+
+    kb_buttons.append([InlineKeyboardButton(text="Назад", callback_data="recurring_events")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
+    await callback.message.answer("Повторяющиеся события:", reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("delete_recurring_"))
+async def delete_recurring_handler(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    event_id = int(callback.data.split("_")[2])
+    await delete_recurring_event(event_id)
+    await callback.message.answer("Событие удалено.")
     await callback.answer()
 
 
