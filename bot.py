@@ -3,14 +3,16 @@ import asyncio
 import logging
 from datetime import datetime
 from aiohttp import web
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, Router, F
 from aiogram.client.default import DefaultBotProperties
+from aiogram.types import Message, Update
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 from config import BOT_TOKEN
 from database import (
     init_db, get_pending_reminders, mark_reminder_sent,
-    get_all_active_recurring_events, mark_recurring_event_created
+    get_all_active_recurring_events, mark_recurring_event_created,
+    track_known_user
 )
 from handlers import admin, user
 
@@ -117,6 +119,16 @@ def main():
     )
 
     dp = Dispatcher()
+
+    @dp.message.outer_middleware()
+    async def track_user_middleware(handler, event: Message, data):
+        if event.from_user and event.from_user.id:
+            await track_known_user(
+                event.from_user.id,
+                event.from_user.username,
+                event.from_user.first_name
+            )
+        return await handler(event, data)
 
     dp.include_router(admin.router)
     dp.include_router(user.router)

@@ -237,6 +237,14 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS known_users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         await db.commit()
 
         # Migration: add new columns to existing tables
@@ -710,6 +718,30 @@ async def get_leaderboard_coins(limit=10):
             (limit,)
         )
         return await cursor.fetchall()
+
+
+async def track_known_user(user_id, username=None, first_name=None):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT INTO known_users (user_id, username, first_name, last_seen) VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(user_id) DO UPDATE SET username = ?, first_name = ?, last_seen = CURRENT_TIMESTAMP",
+            (user_id, username, first_name, username, first_name)
+        )
+        await db.commit()
+
+
+async def get_all_known_users():
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT user_id FROM known_users")
+        return await cursor.fetchall()
+
+
+async def get_known_users_count():
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT COUNT(*) FROM known_users")
+        row = await cursor.fetchone()
+        return row[0]
 
 
 async def create_clan(name, tag, chat_id, leader_id, description=""):

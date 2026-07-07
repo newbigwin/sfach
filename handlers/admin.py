@@ -22,7 +22,8 @@ from database import (
     add_reminder, delete_reminder,
     auto_generate_bracket,
     create_recurring_event, get_recurring_events, delete_recurring_event,
-    resolve_bets, get_match_bets, add_quiz
+    resolve_bets, get_match_bets, add_quiz,
+    get_all_known_users, get_known_users_count
 )
 
 router = Router()
@@ -73,6 +74,7 @@ def admin_keyboard():
         [InlineKeyboardButton(text="Турниры", callback_data="admin_tournaments")],
         [InlineKeyboardButton(text="Напоминания", callback_data="admin_reminders")],
         [InlineKeyboardButton(text="Викторины", callback_data="admin_quizzes")],
+        [InlineKeyboardButton(text="Рассылка", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="Утихомирить всех", callback_data="mute_menu")],
         [InlineKeyboardButton(text="Созвать всех", callback_data="summon_all")],
         [InlineKeyboardButton(text="Мануал", callback_data="admin_manual")],
@@ -2658,3 +2660,84 @@ async def quiz_correct(message: Message, state: FSMContext):
 
     await state.clear()
     await message.answer("Вопрос добавлен!")
+
+
+@router.callback_query(F.data == "admin_broadcast")
+async def admin_broadcast_menu(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    count = await get_known_users_count()
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Отправить рассылку", callback_data="send_broadcast")],
+        [InlineKeyboardButton(text="Назад", callback_data="admin_panel")],
+    ])
+    await callback.message.answer(
+        f"Известно пользователей: {count}\n\n"
+        f"Отправьте сообщение для рассылки (текст, фото или видео):",
+        reply_markup=kb
+    )
+    await callback.answer()
+
+
+class BroadcastState(StatesGroup):
+    waiting_content = State()
+
+
+@router.callback_query(F.data == "send_broadcast")
+async def send_broadcast_start(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await callback.message.answer("Отправьте сообщение для рассылки:")
+    await state.set_state(BroadcastState.waiting_content)
+    await callback.answer()
+
+
+@router.message(BroadcastState.waiting_content)
+async def process_broadcast(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    users = await get_all_known_users()
+    if not users:
+        await message.answer("Нет пользователей для рассылки.")
+        await state.clear()
+        return
+
+    sent = 0
+    failed = 0
+
+    await message.answer(f"Начинаю рассылку для {len(users)} пользователей...")
+
+    for user in users:
+        try:
+            if message.photo:
+                await message.bot.send_photo(
+                    chat_id=user['user_id'],
+                    photo=message.photo[-1].file_id,
+                    caption=message.caption or ""
+                )
+            elif message.video:
+                await message.bot.send_video(
+                    chat_id=user['user_id'],
+                    video=message.video.file_id,
+                    caption=message.caption or ""
+                )
+            elif message.text:
+                await message.bot.send_message(
+                    chat_id=user['user_id'],
+                    text=message.text
+                )
+            sent += 1
+        except Exception:
+            failed += 1
+
+    await state.clear()
+    await message.answer(
+        f"Рассылка завершена!\n"
+        f"Отправлено: {sent}\n"
+        f"Ошибок: {failed}"
+    )
