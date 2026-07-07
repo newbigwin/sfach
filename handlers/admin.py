@@ -25,6 +25,7 @@ from database import (
     update_recurring_event, get_recurring_event,
     resolve_bets, get_match_bets, add_quiz,
     get_all_known_users, get_known_users_count,
+    check_match_exists,
     get_bot_stats, get_tournament_analytics, get_match_stats
 )
 
@@ -2310,23 +2311,59 @@ async def auto_bracket_handler(callback: CallbackQuery, bot: Bot):
     participants = await get_tournament_participants(tournament_id)
     tournament = await get_tournament(tournament_id)
 
-    text = f"Сетка турнира \"{tournament['name']}\" (автоматическая):\n\n"
-    text += "Раунд 1:\n"
+    text = f"Сетка турнира \"{tournament['name']}\":\n\n"
 
-    for i in range(0, len(participants) - 1, 2):
-        p1 = participants[i]
-        p2 = participants[i + 1]
-        name1 = p1['display_name'] or str(p1['user_id'])
-        name2 = p2['display_name'] or str(p2['user_id'])
-        text += f"  {name1} vs {name2}\n"
+    all_matches = await get_tournament_matches(tournament_id)
+    for m in all_matches:
+        p1_name = str(m['player1_id'])
+        p2_name = str(m['player2_id']) if m['player2_id'] else "BYE"
+        for p in participants:
+            if p['user_id'] == m['player1_id']:
+                p1_name = p['display_name'] or p['username'] or str(p['user_id'])
+            if m['player2_id'] and p['user_id'] == m['player2_id']:
+                p2_name = p['display_name'] or p['username'] or str(p['user_id'])
+        status = "✅" if m['winner_id'] else "⏳"
+        text += f"{status} Раунд {m['round_num']}: {p1_name} vs {p2_name}\n"
 
-    if len(participants) % 2 == 1:
-        last = participants[-1]
-        name = last['display_name'] or str(last['user_id'])
-        text += f"\n  {name} —自动 ( bye )\n"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Опубликовать в чат", callback_data=f"publish_bracket_{tournament_id}")],
+        [InlineKeyboardButton(text="Назад", callback_data=f"tournament_{tournament_id}")],
+    ])
+
+    await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("publish_bracket_"))
+async def publish_bracket(callback: CallbackQuery, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    chat_id = await get_chat_id()
+    if not chat_id:
+        await callback.message.answer("Сначала настройте чат!")
+        await callback.answer()
+        return
+
+    tournament_id = int(callback.data.split("_")[2])
+    participants = await get_tournament_participants(tournament_id)
+    tournament = await get_tournament(tournament_id)
+    all_matches = await get_tournament_matches(tournament_id)
+
+    text = f"Сетка турнира \"{tournament['name']}\":\n\n"
+    for m in all_matches:
+        p1_name = str(m['player1_id'])
+        p2_name = str(m['player2_id']) if m['player2_id'] else "BYE"
+        for p in participants:
+            if p['user_id'] == m['player1_id']:
+                p1_name = p['display_name'] or p['username'] or str(p['user_id'])
+            if m['player2_id'] and p['user_id'] == m['player2_id']:
+                p2_name = p['display_name'] or p['username'] or str(p['user_id'])
+        text += f"Раунд {m['round_num']}: {p1_name} vs {p2_name}\n"
 
     await bot.send_message(chat_id=chat_id, text=text)
-    await callback.message.answer("Сетка создана и опубликована!")
+    await callback.message.answer("Сетка опубликована в чате!")
     await callback.answer()
 
 
@@ -2475,6 +2512,17 @@ async def confirm_match(callback: CallbackQuery, state: FSMContext, bot: Bot):
         return
 
     data = await state.get_data()
+
+    existing = await check_match_exists(
+        data['tournament_id'],
+        data['player1_id'],
+        data['player2_id']
+    )
+    if existing:
+        await callback.message.answer("Эти игроки уже сражались в этом турнире!")
+        await state.clear()
+        await callback.answer()
+        return
 
     matches = await get_tournament_matches(data['tournament_id'])
     round_num = 1

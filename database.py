@@ -261,6 +261,10 @@ async def init_db():
             await db.execute("ALTER TABLE recurring_events ADD COLUMN photo TEXT")
         except Exception:
             pass
+        try:
+            await db.execute("ALTER TABLE tournaments ADD COLUMN winner_id INTEGER")
+        except Exception:
+            pass
         await db.commit()
 
 
@@ -825,10 +829,13 @@ async def get_bot_stats():
 async def get_tournament_analytics():
     async with aiosqlite.connect(DB_NAME) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT winner_id, COUNT(*) as wins FROM tournaments WHERE winner_id IS NOT NULL GROUP BY winner_id ORDER BY wins DESC LIMIT 10"
-        )
-        winners = await cursor.fetchall()
+        try:
+            cursor = await db.execute(
+                "SELECT winner_id, COUNT(*) as wins FROM tournaments WHERE winner_id IS NOT NULL GROUP BY winner_id ORDER BY wins DESC LIMIT 10"
+            )
+            winners = await cursor.fetchall()
+        except Exception:
+            winners = []
 
         cursor = await db.execute(
             "SELECT user_id, COUNT(*) as count FROM tournament_participants GROUP BY user_id ORDER BY count DESC LIMIT 10"
@@ -1231,6 +1238,16 @@ async def finish_tournament(tournament_id):
             (tournament_id,)
         )
         await db.commit()
+
+
+async def check_match_exists(tournament_id, player1_id, player2_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            """SELECT id FROM matches WHERE tournament_id = ? AND 
+               ((player1_id = ? AND player2_id = ?) OR (player1_id = ? AND player2_id = ?))""",
+            (tournament_id, player1_id, player2_id, player2_id, player1_id)
+        )
+        return await cursor.fetchone()
 
 
 async def create_match(tournament_id, player1_id, player2_id, round_num, match_num):
