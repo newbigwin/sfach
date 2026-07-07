@@ -193,6 +193,50 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_coins (
+                user_id INTEGER PRIMARY KEY,
+                balance INTEGER DEFAULT 100,
+                last_daily TIMESTAMP,
+                total_won INTEGER DEFAULT 0,
+                total_lost INTEGER DEFAULT 0
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS bets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                match_id INTEGER NOT NULL,
+                bet_on_user_id INTEGER NOT NULL,
+                amount INTEGER NOT NULL,
+                resolved INTEGER DEFAULT 0,
+                won INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS quizzes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                question TEXT NOT NULL,
+                options TEXT NOT NULL,
+                correct_index INTEGER NOT NULL,
+                created_by INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS predictions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                tournament_id INTEGER NOT NULL,
+                predicted_winner_id INTEGER NOT NULL,
+                amount INTEGER NOT NULL,
+                resolved INTEGER DEFAULT 0,
+                won INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         await db.commit()
 
         # Migration: add new columns to existing tables
@@ -474,6 +518,198 @@ async def mark_recurring_event_created(event_id):
             (event_id,)
         )
         await db.commit()
+
+
+async def get_user_coins(user_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM user_coins WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        if not row:
+            await db.execute("INSERT INTO user_coins (user_id, balance) VALUES (?, 100)", (user_id,))
+            await db.commit()
+            return {"user_id": user_id, "balance": 100, "last_daily": None, "total_won": 0, "total_lost": 0}
+        return dict(row)
+
+
+async def claim_daily(user_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM user_coins WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        now = datetime.now()
+        if row:
+            last = row['last_daily']
+            if last:
+                last_dt = datetime.fromisoformat(last)
+                if (now - last_dt).total_seconds() < 86400:
+                    return None, row['balance']
+            new_balance = row['balance'] + 50
+            await db.execute(
+                "UPDATE user_coins SET balance = ?, last_daily = CURRENT_TIMESTAMP WHERE user_id = ?",
+                (new_balance, user_id)
+            )
+        else:
+            new_balance = 150
+            await db.execute(
+                "INSERT INTO user_coins (user_id, balance, last_daily) VALUES (?, ?, CURRENT_TIMESTAMP)",
+                (user_id, new_balance)
+            )
+        await db.commit()
+        return new_balance, None
+
+
+async def add_coins(user_id, amount):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT INTO user_coins (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?",
+            (user_id, amount, amount)
+        )
+        await db.commit()
+
+
+async def remove_coins(user_id, amount):
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT balance FROM user_coins WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        if not row or row[0] < amount:
+            return False
+        await db.execute(
+            "UPDATE user_coins SET balance = balance - ? WHERE user_id = ?",
+            (amount, user_id)
+        )
+        await db.commit()
+        return True
+
+
+async def place_bet(user_id, match_id, bet_on_user_id, amount):
+    async with aiosqlite.connect(DB_NAME) as db:
+        ok = await remove_coins(user_id, amount)
+        if not ok:
+            return False
+        await db.execute(
+            "INSERT INTO bets (user_id, match_id, bet_on_user_id, amount) VALUES (?, ?, ?, ?)",
+            (user_id, match_id, bet_on_user_id, amount)
+        )
+        await db.commit()
+        return True
+
+
+async def resolve_bets(match_id, winner_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM bets WHERE match_id = ? AND resolved = 0", (match_id,))
+        bets = await cursor.fetchall()
+        total_pool = sum(b['amount'] for b in bets)
+        winners = [b for b in bets if b['bet_on_user_id'] == winner_id]
+        losers = [b for b in bets if b['bet_on_user_id'] != winner_id]
+        total_loser_amount = sum(b['amount'] for b in losers)
+
+        for b in winners:
+            share = int(total_loser_amount * (b['amount'] / max(1, sum(x['amount'] for x in winners)))) if winners else 0
+            await add_coins(b['user_id'], b['amount'] + share)
+            await db.execute(
+                "UPDATE bets SET resolved = 1, won = 1 WHERE id = ?", (b['id'],)
+            )
+            await db.execute(
+                "UPDATE user_coins SET total_won = total_won + ? WHERE user_id = ?",
+                (share, b['user_id'])
+            )
+
+        for b in losers:
+            await db.execute(
+                "UPDATE bets SET resolved = 1, won = 0 WHERE id = ?", (b['id'],)
+            )
+            await db.execute(
+                "UPDATE user_coins SET total_lost = total_lost + ? WHERE user_id = ?",
+                (b['amount'], b['user_id'])
+            )
+
+        await db.commit()
+        return len(winners)
+
+
+async def get_match_bets(match_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM bets WHERE match_id = ? ORDER BY amount DESC",
+            (match_id,)
+        )
+        return await cursor.fetchall()
+
+
+async def add_quiz(chat_id, question, options, correct_index, created_by):
+    async with aiosqlite.connect(DB_NAME) as db:
+        import json
+        cursor = await db.execute(
+            "INSERT INTO quizzes (chat_id, question, options, correct_index, created_by) VALUES (?, ?, ?, ?, ?)",
+            (chat_id, question, json.dumps(options), correct_index, created_by)
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_random_quiz(chat_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM quizzes WHERE chat_id = ? ORDER BY RANDOM() LIMIT 1",
+            (chat_id,)
+        )
+        row = await cursor.fetchone()
+        if row:
+            import json
+            row = dict(row)
+            row['options'] = json.loads(row['options'])
+        return row
+
+
+async def place_prediction(user_id, tournament_id, predicted_winner_id, amount):
+    async with aiosqlite.connect(DB_NAME) as db:
+        ok = await remove_coins(user_id, amount)
+        if not ok:
+            return False
+        await db.execute(
+            "INSERT INTO predictions (user_id, tournament_id, predicted_winner_id, amount) VALUES (?, ?, ?, ?)",
+            (user_id, tournament_id, predicted_winner_id, amount)
+        )
+        await db.commit()
+        return True
+
+
+async def resolve_predictions(tournament_id, winner_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM predictions WHERE tournament_id = ? AND resolved = 0",
+            (tournament_id,)
+        )
+        preds = await cursor.fetchall()
+        winners = [p for p in preds if p['predicted_winner_id'] == winner_id]
+        losers = [p for p in preds if p['predicted_winner_id'] != winner_id]
+        total_loser = sum(p['amount'] for p in losers)
+
+        for p in winners:
+            share = int(total_loser * (p['amount'] / max(1, sum(x['amount'] for x in winners)))) if winners else 0
+            await add_coins(p['user_id'], p['amount'] + share)
+            await db.execute("UPDATE predictions SET resolved = 1, won = 1 WHERE id = ?", (p['id'],))
+
+        for p in losers:
+            await db.execute("UPDATE predictions SET resolved = 1, won = 0 WHERE id = ?", (p['id'],))
+
+        await db.commit()
+        return len(winners)
+
+
+async def get_leaderboard_coins(limit=10):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT user_id, balance FROM user_coins ORDER BY balance DESC LIMIT ?",
+            (limit,)
+        )
+        return await cursor.fetchall()
 
 
 async def create_clan(name, tag, chat_id, leader_id, description=""):

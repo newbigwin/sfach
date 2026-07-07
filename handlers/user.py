@@ -12,7 +12,10 @@ from database import (
     get_setting, get_chat_id, track_chat_member,
     get_or_create_player, get_leaderboard, get_player_stats,
     create_clan, get_clan, get_user_clan, join_clan, leave_clan,
-    get_clan_members, get_clans, get_clan_member_count
+    get_clan_members, get_clans, get_clan_member_count,
+    get_user_coins, claim_daily, place_bet, get_match_bets,
+    add_quiz, get_random_quiz, place_prediction, get_leaderboard_coins,
+    get_tournament_matches
 )
 
 router = Router()
@@ -714,3 +717,120 @@ async def user_standings(callback: CallbackQuery):
 
     await callback.message.answer(text)
     await callback.answer()
+
+
+@router.message(Command("daily"))
+async def cmd_daily(message: Message):
+    balance, already = await claim_daily(message.from_user.id)
+    if already is not None:
+        await message.answer(
+            f"Ты уже получал бонус сегодня!\n"
+            f"Баланс: {already} монет\n"
+            f"Приходи завтра за +50"
+        )
+    else:
+        await message.answer(
+            f"Ежедневный бонус получен! +50 монет\n"
+            f"Баланс: {balance} монет"
+        )
+
+
+@router.message(Command("balance"))
+async def cmd_balance(message: Message):
+    coins = await get_user_coins(message.from_user.id)
+    await message.answer(
+        f"Баланс: {coins['balance']} монет\n"
+        f"Выиграно: {coins['total_won']} | Проиграно: {coins['total_lost']}"
+    )
+
+
+@router.message(Command("coins"))
+async def cmd_coins(message: Message):
+    coins = await get_user_coins(message.from_user.id)
+    await message.answer(
+        f"Монеты: {coins['balance']}\n\n"
+        f"Команды:\n"
+        f"/daily - бонус +50\n"
+        f"/balance - баланс\n"
+        f"/quiz - викторина (+20 монет)\n"
+        f"/coins_top - рейтинг"
+    )
+
+
+@router.message(Command("quiz"))
+async def cmd_quiz(message: Message):
+    chat_id = message.chat.id
+    quiz = await get_random_quiz(chat_id)
+    if not quiz:
+        await message.answer("Пока нет вопросов. Админ может добавить через /addquiz")
+        return
+
+    kb_buttons = []
+    for i, opt in enumerate(quiz['options']):
+        kb_buttons.append([InlineKeyboardButton(text=opt, callback_data=f"quiz_{quiz['id']}_{i}_{quiz['correct_index']}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
+
+    await message.answer(f"Викторина:\n\n{quiz['question']}", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("quiz_"))
+async def quiz_answer(callback: CallbackQuery):
+    parts = callback.data.split("_")
+    quiz_id = int(parts[1])
+    chosen = int(parts[2])
+    correct = int(parts[3])
+
+    if chosen == correct:
+        from database import add_coins
+        await add_coins(callback.from_user.id, 20)
+        await callback.message.edit_text("Правильно! +20 монет")
+    else:
+        await callback.message.edit_text("Неверно! Попробуй следующий раз.")
+    await callback.answer()
+
+
+@router.message(Command("coins_top"))
+async def cmd_coins_top(message: Message):
+    leaders = await get_leaderboard_coins(10)
+    if not leaders:
+        await message.answer("Пока нет данных.")
+        return
+
+    text = "Топ по монетам:\n\n"
+    medals = ["🥇", "🥈", "🥉"]
+    for i, l in enumerate(leaders):
+        medal = medals[i] if i < 3 else f"{i+1}."
+        text += f"{medal} ID {l['user_id']} - {l['balance']} монет\n"
+    await message.answer(text)
+
+
+@router.message(Command("bet"))
+async def cmd_bet(message: Message):
+    parts = message.text.split()
+    if len(parts) != 4:
+        await message.answer("Формат: /bet [сумма] [match_id] [user_id]")
+        return
+
+    try:
+        amount = int(parts[1])
+        match_id = int(parts[2])
+        bet_on = int(parts[3])
+    except ValueError:
+        await message.answer("Неверный формат. Используйте числа.")
+        return
+
+    if amount <= 0:
+        await message.answer("Сумма должна быть положительной.")
+        return
+
+    ok = await place_bet(message.from_user.id, match_id, bet_on, amount)
+    if ok:
+        coins = await get_user_coins(message.from_user.id)
+        await message.answer(
+            f"Ставка принята!\n"
+            f"Поставлено: {amount} монет\n"
+            f"На игрока ID {bet_on}\n"
+            f"Остаток: {coins['balance']} монет"
+        )
+    else:
+        await message.answer("Недостаточно монет или ошибка!")

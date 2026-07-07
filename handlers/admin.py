@@ -21,7 +21,8 @@ from database import (
     track_chat_member, get_chat_members,
     add_reminder, delete_reminder,
     auto_generate_bracket,
-    create_recurring_event, get_recurring_events, delete_recurring_event
+    create_recurring_event, get_recurring_events, delete_recurring_event,
+    resolve_bets, get_match_bets, add_quiz
 )
 
 router = Router()
@@ -71,6 +72,7 @@ def admin_keyboard():
         [InlineKeyboardButton(text="Голосования", callback_data="admin_polls")],
         [InlineKeyboardButton(text="Турниры", callback_data="admin_tournaments")],
         [InlineKeyboardButton(text="Напоминания", callback_data="admin_reminders")],
+        [InlineKeyboardButton(text="Викторины", callback_data="admin_quizzes")],
         [InlineKeyboardButton(text="Утихомирить всех", callback_data="mute_menu")],
         [InlineKeyboardButton(text="Созвать всех", callback_data="summon_all")],
         [InlineKeyboardButton(text="Мануал", callback_data="admin_manual")],
@@ -2333,6 +2335,7 @@ async def set_winner_handler(callback: CallbackQuery, bot: Bot):
     winner_id = int(parts[3])
 
     await set_match_winner(match_id, winner_id)
+    await resolve_bets(match_id, winner_id)
 
     match = await get_match(match_id)
     participants = await get_tournament_participants(match['tournament_id'])
@@ -2566,3 +2569,92 @@ async def announce_results_handler(callback: CallbackQuery, bot: Bot):
     await bot.send_message(chat_id=chat_id, text=text)
     await callback.message.answer("Результаты объявлены в чате! Рейтинги обновлены.")
     await callback.answer()
+
+
+@router.callback_query(F.data == "admin_quizzes")
+async def admin_quizzes_menu(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Добавить вопрос", callback_data="add_quiz")],
+        [InlineKeyboardButton(text="Назад", callback_data="admin_panel")],
+    ])
+    await callback.message.answer("Викторины:", reply_markup=kb)
+    await callback.answer()
+
+
+class AddQuiz(StatesGroup):
+    question = State()
+    options = State()
+    correct = State()
+
+
+@router.callback_query(F.data == "add_quiz")
+async def add_quiz_start(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await callback.message.answer("Введите вопрос:")
+    await state.set_state(AddQuiz.question)
+    await callback.answer()
+
+
+@router.message(AddQuiz.question)
+async def quiz_question(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    await state.update_data(question=message.text)
+    await message.answer("Введите 4 варианта ответа через запятую:")
+    await state.set_state(AddQuiz.options)
+
+
+@router.message(AddQuiz.options)
+async def quiz_options(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    options = [o.strip() for o in message.text.split(",")]
+    if len(options) != 4:
+        await message.answer("Нужно ровно 4 варианта через запятую:")
+        return
+
+    await state.update_data(options=options)
+    await message.answer("Номер правильного ответа (1-4):")
+    await state.set_state(AddQuiz.correct)
+
+
+@router.message(AddQuiz.correct)
+async def quiz_correct(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    try:
+        correct = int(message.text) - 1
+        if correct < 0 or correct > 3:
+            await message.answer("Введите число от 1 до 4:")
+            return
+    except ValueError:
+        await message.answer("Введите число:")
+        return
+
+    data = await state.get_data()
+    chat_id = await get_chat_id()
+    if not chat_id:
+        await message.answer("Сначала настройте чат командой /setchat!")
+        await state.clear()
+        return
+
+    await add_quiz(
+        chat_id=chat_id,
+        question=data['question'],
+        options=data['options'],
+        correct_index=correct,
+        created_by=message.from_user.id
+    )
+
+    await state.clear()
+    await message.answer("Вопрос добавлен!")
