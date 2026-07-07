@@ -1,6 +1,6 @@
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
-from aiogram.filters import Command, ChatType
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
@@ -75,8 +75,11 @@ async def check_chat_id(message_or_callback):
     return True
 
 
-@router.message(Command("admin"), ChatType.PRIVATE)
+@router.message(Command("admin"))
 async def admin_panel(message: Message):
+    if message.chat.type != "private":
+        return
+
     if not is_admin(message.from_user.id):
         await message.answer("У вас нет доступа к админ-панели.")
         return
