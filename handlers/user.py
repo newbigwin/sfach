@@ -1,6 +1,8 @@
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import CommandStart, Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 
 from config import ADMIN_ID
 from database import (
@@ -8,7 +10,9 @@ from database import (
     get_active_tournaments, get_tournament, join_tournament, leave_tournament,
     get_tournament_participants, get_participant_count, get_tournament_standings,
     get_setting, get_chat_id, track_chat_member,
-    get_or_create_player, get_leaderboard, get_player_stats
+    get_or_create_player, get_leaderboard, get_player_stats,
+    create_clan, get_clan, get_user_clan, join_clan, leave_clan,
+    get_clan_members, get_clans, get_clan_member_count
 )
 
 router = Router()
@@ -57,6 +61,10 @@ async def help_cmd(message: Message):
         "/tournaments - Турниры\n"
         "/profile - Мой профиль\n"
         "/leaderboard - Таблица лидеров\n"
+        "/clan - Мой клан\n"
+        "/clans - Все кланы\n"
+        "/clan_join <ID> - Вступить в клан\n"
+        "/clan_leave - Покинуть клан\n"
         "/help - Помощь"
     )
 
@@ -119,6 +127,261 @@ async def leaderboard_cmd(message: Message):
         text += f"{medal} {p['user_id']} — ELO: {p['elo']} (W:{p['wins']} L:{p['losses']})\n"
 
     await message.answer(text)
+
+
+class CreateClan(StatesGroup):
+    name = State()
+    tag = State()
+    description = State()
+    confirm = State()
+
+
+@router.message(Command("clans"))
+async def clans_cmd(message: Message):
+    configured = await get_chat_id()
+    if message.chat.type != "private" and str(message.chat.id) != str(configured):
+        return
+
+    chat_id = message.chat.id
+    clans = await get_clans(chat_id)
+
+    if not clans:
+        await message.answer("Пока нет кланов.")
+        return
+
+    text = "Кланы:\n\n"
+    for c in clans:
+        count = await get_clan_member_count(c['id'])
+        text += f"[{c['tag']}] {c['name']} — ELO: {c['elo']} ({count} чел.)\n"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Мой клан", callback_data="my_clan")],
+        [InlineKeyboardButton(text="Создать клан", callback_data="create_clan_start")],
+    ])
+    await message.answer(text, reply_markup=kb)
+
+
+@router.message(Command("clan"))
+async def clan_cmd(message: Message):
+    configured = await get_chat_id()
+    if message.chat.type != "private" and str(message.chat.id) != str(configured):
+        return
+
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
+    clan = await get_user_clan(user_id, chat_id)
+    if not clan:
+        await message.answer("Вы не в клане. Используйте /clans чтобы присоединиться.")
+        return
+
+    members = await get_clan_members(clan['id'])
+    count = len(members)
+
+    text = (
+        f"Клан: [{clan['tag']}] {clan['name']}\n"
+        f"Описание: {clan['description']}\n"
+        f"ELO: {clan['elo']}\n"
+        f"Победы: {clan['wins']} | Поражения: {clan['losses']}\n"
+        f"Участники: {count}\n\n"
+        f"Участники:\n"
+    )
+
+    for m in members:
+        role = " " if m['role'] == 'leader' else " "
+        name = str(m['user_id'])
+        text += f"  {role} {name} (ELO: {m['elo'] or 1000})\n"
+
+    await message.answer(text)
+
+
+@router.callback_query(F.data == "my_clan")
+async def my_clan_callback(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    chat_id = callback.message.chat.id
+
+    clan = await get_user_clan(user_id, chat_id)
+    if not clan:
+        await callback.message.answer("Вы не в клане.")
+        await callback.answer()
+        return
+
+    members = await get_clan_members(clan['id'])
+    count = len(members)
+
+    text = (
+        f"Клан: [{clan['tag']}] {clan['name']}\n"
+        f"ELO: {clan['elo']}\n"
+        f"Участники: {count}\n\n"
+        f"Участники:\n"
+    )
+
+    for m in members:
+        role = " " if m['role'] == 'leader' else " "
+        name = str(m['user_id'])
+        text += f"  {role} {name}\n"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Покинуть клан", callback_data="leave_clan_confirm")]
+    ])
+    await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "create_clan_start")
+async def create_clan_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.answer("Введите название клана:")
+    await state.set_state(CreateClan.name)
+    await callback.answer()
+
+
+@router.message(CreateClan.name)
+async def clan_name(message: Message, state: FSMContext):
+    from aiogram.fsm.context import FSMContext
+    await state.update_data(name=message.text)
+    await message.answer("Введите тег клана (2-5 символов, например [SF]):")
+    await state.set_state(CreateClan.tag)
+
+
+@router.message(CreateClan.tag)
+async def clan_tag(message: Message, state: FSMContext):
+    tag = message.text.strip("[] ")
+    if len(tag) < 2 or len(tag) > 5:
+        await message.answer("Тег должен быть 2-5 символов:")
+        return
+    await state.update_data(tag=tag)
+    await message.answer("Введите описание клана (или 'пропустить'):")
+    await state.set_state(CreateClan.description)
+
+
+@router.message(CreateClan.description)
+async def clan_desc(message: Message, state: FSMContext):
+    desc = message.text if message.text.lower() != "пропустить" else ""
+    await state.update_data(description=desc)
+
+    data = await state.get_data()
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Создать", callback_data="confirm_clan"),
+            InlineKeyboardButton(text="Отмена", callback_data="cancel_clan"),
+        ]
+    ])
+    await message.answer(
+        f"Создать клан?\n\n"
+        f"Название: {data['name']}\n"
+        f"Тег: [{data['tag']}]\n"
+        f"Описание: {data['description'] or 'нет'}",
+        reply_markup=kb
+    )
+    await state.set_state(CreateClan.confirm)
+
+
+@router.callback_query(F.data == "confirm_clan", CreateClan.confirm)
+async def confirm_clan(callback: CallbackQuery, state: FSMContext):
+    from aiogram.fsm.context import FSMContext
+    chat_id = await get_chat_id()
+    if not chat_id:
+        await callback.message.answer("Сначала настройте чат командой /setchat в группе!")
+        await callback.answer()
+        return
+
+    data = await state.get_data()
+    user_id = callback.from_user.id
+
+    existing = await get_user_clan(user_id, chat_id)
+    if existing:
+        await callback.message.answer("Вы уже в клане! Сначала покиньте его.")
+        await callback.answer()
+        return
+
+    clan_id = await create_clan(
+        name=data['name'],
+        tag=data['tag'],
+        chat_id=chat_id,
+        leader_id=user_id,
+        description=data['description']
+    )
+
+    if clan_id:
+        await state.clear()
+        await callback.message.answer(f"Клан [{data['tag']}] {data['name']} создан!")
+    else:
+        await callback.message.answer("Ошибка при создании клана. Возможно, клан с таким названием уже есть.")
+
+    await callback.answer()
+
+
+@router.callback_query(F.data == "cancel_clan")
+async def cancel_clan(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.answer("Создание клана отменено.")
+    await callback.answer()
+
+
+@router.message(Command("clan_join"))
+async def clan_join_cmd(message: Message):
+    configured = await get_chat_id()
+    if message.chat.type != "private" and str(message.chat.id) != str(configured):
+        return
+
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("Использование: /clan_join <ID клана>")
+        return
+
+    try:
+        clan_id = int(args[1])
+    except ValueError:
+        await message.answer("Неверный ID клана.")
+        return
+
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
+    existing = await get_user_clan(user_id, chat_id)
+    if existing:
+        await message.answer("Вы уже в клане! Сначала покиньте /clan_leave.")
+        return
+
+    clan = await get_clan(clan_id)
+    if not clan:
+        await message.answer("Клан не найден.")
+        return
+
+    if clan['chat_id'] != chat_id:
+        await message.answer("Этот клан не в этом чате.")
+        return
+
+    success = await join_clan(clan_id, user_id)
+    if success:
+        await message.answer(f"Вы вступили в клан [{clan['tag']}] {clan['name']}!")
+    else:
+        await message.answer("Не удалось вступить в клан.")
+
+
+@router.message(Command("clan_leave"))
+async def clan_leave_cmd(message: Message):
+    configured = await get_chat_id()
+    if message.chat.type != "private" and str(message.chat.id) != str(configured):
+        return
+
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
+    clan = await get_user_clan(user_id, chat_id)
+    if not clan:
+        await message.answer("Вы не в клане.")
+        return
+
+    if clan['leader_id'] == user_id:
+        await message.answer("Лидер не может покинуть клан. Передайте лидерство или удалите клан.")
+        return
+
+    success = await leave_clan(user_id, chat_id)
+    if success:
+        await message.answer("Вы покинули клан.")
+    else:
+        await message.answer("Не удалось покинуть клан.")
 
 
 @router.message(Command("events"))

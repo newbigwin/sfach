@@ -153,6 +153,31 @@ async def init_db():
                 UNIQUE(user_id, achievement_type)
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS clans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                tag TEXT NOT NULL,
+                chat_id INTEGER NOT NULL,
+                leader_id INTEGER NOT NULL,
+                description TEXT DEFAULT '',
+                elo INTEGER DEFAULT 1000,
+                wins INTEGER DEFAULT 0,
+                losses INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS clan_members (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                clan_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                role TEXT DEFAULT 'member',
+                joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (clan_id) REFERENCES clans(id),
+                UNIQUE(clan_id, user_id)
+            )
+        """)
         await db.commit()
 
         # Migration: add new columns to existing tables
@@ -390,6 +415,116 @@ async def check_and_award_achievements(user_id, chat_id):
             awarded.append("win_streak_10")
 
     return awarded
+
+
+async def create_clan(name, tag, chat_id, leader_id, description=""):
+    async with aiosqlite.connect(DB_NAME) as db:
+        try:
+            cursor = await db.execute(
+                "INSERT INTO clans (name, tag, chat_id, leader_id, description) VALUES (?, ?, ?, ?, ?)",
+                (name, tag, chat_id, leader_id, description)
+            )
+            clan_id = cursor.lastrowid
+            await db.execute(
+                "INSERT INTO clan_members (clan_id, user_id, role) VALUES (?, ?, 'leader')",
+                (clan_id, leader_id)
+            )
+            await db.commit()
+            return clan_id
+        except Exception:
+            return None
+
+
+async def get_clan(clan_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM clans WHERE id = ?", (clan_id,))
+        return await cursor.fetchone()
+
+
+async def get_user_clan(user_id, chat_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("""
+            SELECT c.* FROM clans c
+            JOIN clan_members cm ON cm.clan_id = c.id
+            WHERE cm.user_id = ? AND c.chat_id = ?
+        """, (user_id, chat_id))
+        return await cursor.fetchone()
+
+
+async def join_clan(clan_id, user_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        try:
+            await db.execute(
+                "INSERT INTO clan_members (clan_id, user_id) VALUES (?, ?)",
+                (clan_id, user_id)
+            )
+            await db.commit()
+            return True
+        except Exception:
+            return False
+
+
+async def leave_clan(user_id, chat_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        clan = await get_user_clan(user_id, chat_id)
+        if not clan:
+            return False
+        await db.execute(
+            "DELETE FROM clan_members WHERE user_id = ? AND clan_id = ?",
+            (user_id, clan['id'])
+        )
+        await db.commit()
+        return True
+
+
+async def get_clan_members(clan_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("""
+            SELECT cm.*, ps.elo, ps.wins, ps.losses
+            FROM clan_members cm
+            LEFT JOIN player_stats ps ON ps.user_id = cm.user_id
+            WHERE cm.clan_id = ?
+            ORDER BY cm.role = 'leader' DESC, ps.elo DESC
+        """, (clan_id,))
+        return await cursor.fetchall()
+
+
+async def get_clans(chat_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM clans WHERE chat_id = ? ORDER BY elo DESC",
+            (chat_id,)
+        )
+        return await cursor.fetchall()
+
+
+async def get_clan_member_count(clan_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM clan_members WHERE clan_id = ?",
+            (clan_id,)
+        )
+        row = await cursor.fetchone()
+        return row[0]
+
+
+async def update_clan_stats(clan_id, won):
+    async with aiosqlite.connect(DB_NAME) as db:
+        if won:
+            await db.execute(
+                "UPDATE clans SET elo = elo + 20, wins = wins + 1 WHERE id = ?",
+                (clan_id,)
+            )
+        else:
+            await db.execute(
+                "UPDATE clans SET elo = MAX(100, elo - 15), losses = losses + 1 WHERE id = ?",
+                (clan_id,)
+            )
+        await db.commit()
 
 
 async def track_chat_member(user_id, chat_id, username=None, display_name=None):
