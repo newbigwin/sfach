@@ -128,6 +128,20 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS player_stats (
+                user_id INTEGER PRIMARY KEY,
+                chat_id INTEGER NOT NULL,
+                elo INTEGER DEFAULT 1000,
+                wins INTEGER DEFAULT 0,
+                losses INTEGER DEFAULT 0,
+                tournaments_played INTEGER DEFAULT 0,
+                tournaments_won INTEGER DEFAULT 0,
+                current_streak INTEGER DEFAULT 0,
+                best_streak INTEGER DEFAULT 0,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         await db.commit()
 
         # Migration: add new columns to existing tables
@@ -201,6 +215,87 @@ async def delete_reminder(reminder_id):
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
         await db.commit()
+
+
+async def get_or_create_player(user_id, chat_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM player_stats WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        if not row:
+            await db.execute(
+                "INSERT INTO player_stats (user_id, chat_id) VALUES (?, ?)",
+                (user_id, chat_id)
+            )
+            await db.commit()
+            cursor = await db.execute("SELECT * FROM player_stats WHERE user_id = ?", (user_id,))
+            row = await cursor.fetchone()
+        return row
+
+
+async def update_player_stats(user_id, chat_id, elo_change, is_win):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await get_or_create_player(user_id, chat_id)
+        if is_win:
+            await db.execute("""
+                UPDATE player_stats SET 
+                    elo = elo + ?,
+                    wins = wins + 1,
+                    current_streak = current_streak + 1,
+                    best_streak = MAX(best_streak, current_streak + 1),
+                    last_updated = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+            """, (elo_change, user_id))
+        else:
+            await db.execute("""
+                UPDATE player_stats SET 
+                    elo = MAX(100, elo + ?),
+                    losses = losses + 1,
+                    current_streak = 0,
+                    last_updated = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+            """, (elo_change, user_id))
+        await db.commit()
+
+
+async def update_tournament_stats(user_id, chat_id, won):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await get_or_create_player(user_id, chat_id)
+        if won:
+            await db.execute("""
+                UPDATE player_stats SET tournaments_played = tournaments_played + 1,
+                    tournaments_won = tournaments_won + 1
+                WHERE user_id = ?
+            """, (user_id,))
+        else:
+            await db.execute("""
+                UPDATE player_stats SET tournaments_played = tournaments_played + 1
+                WHERE user_id = ?
+            """, (user_id,))
+        await db.commit()
+
+
+async def get_leaderboard(chat_id, limit=10):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM player_stats WHERE chat_id = ? ORDER BY elo DESC LIMIT ?",
+            (chat_id, limit)
+        )
+        return await cursor.fetchall()
+
+
+async def get_player_stats(user_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM player_stats WHERE user_id = ?", (user_id,))
+        return await cursor.fetchone()
+
+
+async def calculate_elo_change(winner_elo, loser_elo, k=32):
+    expected = 1 / (1 + 10 ** ((loser_elo - winner_elo) / 400))
+    change = int(k * (1 - expected))
+    return max(change, 8)
 
 
 async def track_chat_member(user_id, chat_id, username=None, display_name=None):
@@ -541,10 +636,12 @@ async def get_tournament_standings(tournament_id):
                 tp.user_id,
                 tp.username,
                 tp.display_name,
+                COALESCE(ps.elo, 1000) as elo,
                 COUNT(CASE WHEN m.winner_id = tp.user_id THEN 1 END) as wins,
                 COUNT(CASE WHEN (m.player1_id = tp.user_id OR m.player2_id = tp.user_id) AND m.winner_id != tp.user_id THEN 1 END) as losses
             FROM tournament_participants tp
             LEFT JOIN matches m ON (m.player1_id = tp.user_id OR m.player2_id = tp.user_id) AND m.tournament_id = tp.tournament_id AND m.status = 'finished'
+            LEFT JOIN player_stats ps ON ps.user_id = tp.user_id
             WHERE tp.tournament_id = ?
             GROUP BY tp.user_id
             ORDER BY wins DESC

@@ -2252,6 +2252,28 @@ async def announce_results_handler(callback: CallbackQuery, bot: Bot):
     prizes = await get_tournament_prizes(tournament_id)
     standings = await get_tournament_standings(tournament_id)
 
+    from database import update_player_stats, update_tournament_stats, calculate_elo_change
+
+    if standings and len(standings) >= 2:
+        for i in range(len(standings)):
+            for j in range(i + 1, len(standings)):
+                winner = standings[i]
+                loser = standings[j]
+                elo_change = calculate_elo_change(winner['elo'] if 'elo' in winner.keys() else 1000, loser['elo'] if 'elo' in loser.keys() else 1000)
+                await update_player_stats(winner['user_id'], chat_id, elo_change, True)
+                await update_player_stats(loser['user_id'], chat_id, -elo_change, False)
+
+    if prizes:
+        for prize in prizes:
+            if prize['place'] == 1:
+                await update_tournament_stats(prize['user_id'], chat_id, True)
+            else:
+                await update_tournament_stats(prize['user_id'], chat_id, False)
+    elif standings:
+        await update_tournament_stats(standings[0]['user_id'], chat_id, True)
+        for s in standings[1:]:
+            await update_tournament_stats(s['user_id'], chat_id, False)
+
     text = f"Турнир \"{tournament['name']}\" завершен!\n\n"
 
     if prizes:
@@ -2270,5 +2292,5 @@ async def announce_results_handler(callback: CallbackQuery, bot: Bot):
         text += f"Победитель: {winner_name}\n"
 
     await bot.send_message(chat_id=chat_id, text=text)
-    await callback.message.answer("Результаты объявлены в чате!")
+    await callback.message.answer("Результаты объявлены в чате! Рейтинги обновлены.")
     await callback.answer()

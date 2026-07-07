@@ -7,7 +7,8 @@ from database import (
     get_events, get_active_polls, get_poll, vote, get_poll_results,
     get_active_tournaments, get_tournament, join_tournament, leave_tournament,
     get_tournament_participants, get_participant_count, get_tournament_standings,
-    get_setting, get_chat_id, track_chat_member
+    get_setting, get_chat_id, track_chat_member,
+    get_or_create_player, get_leaderboard, get_player_stats
 )
 
 router = Router()
@@ -54,8 +55,62 @@ async def help_cmd(message: Message):
         "/events - Список событий\n"
         "/polls - Активные голосования\n"
         "/tournaments - Турниры\n"
+        "/profile - Мой профиль\n"
+        "/leaderboard - Таблица лидеров\n"
         "/help - Помощь"
     )
+
+
+@router.message(Command("profile"))
+async def profile_cmd(message: Message):
+    configured = await get_chat_id()
+    if message.chat.type != "private" and str(message.chat.id) != str(configured):
+        return
+
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
+    player = await get_or_create_player(user_id, chat_id)
+
+    total_games = player['wins'] + player['losses']
+    winrate = (player['wins'] * 100 // total_games) if total_games > 0 else 0
+
+    text = (
+        f"Профиль: {message.from_user.full_name}\n\n"
+        f"Рейтинг (ELO): {player['elo']}\n"
+        f"Победы: {player['wins']}\n"
+        f"Поражения: {player['losses']}\n"
+        f"Винрейт: {winrate}%\n"
+        f"Турниров сыграно: {player['tournaments_played']}\n"
+        f"Турниров выиграно: {player['tournaments_won']}\n"
+        f"Текущая серия: {player['current_streak']}\n"
+        f"Лучшая серия: {player['best_streak']}"
+    )
+
+    await message.answer(text)
+
+
+@router.message(Command("leaderboard"))
+async def leaderboard_cmd(message: Message):
+    configured = await get_chat_id()
+    if message.chat.type != "private" and str(message.chat.id) != str(configured):
+        return
+
+    chat_id = message.chat.id
+    players = await get_leaderboard(chat_id, limit=10)
+
+    if not players:
+        await message.answer("Пока нет данных о рейтинге.")
+        return
+
+    medals = ["", "", ""]
+    text = "Таблица лидеров:\n\n"
+
+    for i, p in enumerate(players):
+        medal = medals[i] if i < 3 else f"{i+1}."
+        text += f"{medal} {p['user_id']} — ELO: {p['elo']} (W:{p['wins']} L:{p['losses']})\n"
+
+    await message.answer(text)
 
 
 @router.message(Command("events"))
