@@ -2274,6 +2274,17 @@ async def announce_results_handler(callback: CallbackQuery, bot: Bot):
         for s in standings[1:]:
             await update_tournament_stats(s['user_id'], chat_id, False)
 
+    from database import check_and_award_achievements, get_user_achievements
+    all_awarded = []
+    if prizes:
+        for prize in prizes:
+            awarded = await check_and_award_achievements(prize['user_id'], chat_id)
+            all_awarded.extend(awarded)
+    elif standings:
+        for s in standings:
+            awarded = await check_and_award_achievements(s['user_id'], chat_id)
+            all_awarded.extend(awarded)
+
     text = f"Турнир \"{tournament['name']}\" завершен!\n\n"
 
     if prizes:
@@ -2290,6 +2301,13 @@ async def announce_results_handler(callback: CallbackQuery, bot: Bot):
         winner = standings[0]
         winner_name = winner['display_name'] or winner['username'] or str(winner['user_id'])
         text += f"Победитель: {winner_name}\n"
+
+    if all_awarded:
+        text += "\nНаграждены достижениями:\n"
+        from database import ACHIEVEMENTS
+        for a in set(all_awarded):
+            if a in ACHIEVEMENTS:
+                text += f"  {ACHIEVEMENTS[a][0]}\n"
 
     await bot.send_message(chat_id=chat_id, text=text)
     await callback.message.answer("Результаты объявлены в чате! Рейтинги обновлены.")

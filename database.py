@@ -142,6 +142,17 @@ async def init_db():
                 last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS achievements (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                achievement_type TEXT NOT NULL,
+                achievement_name TEXT NOT NULL,
+                description TEXT,
+                awarded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, achievement_type)
+            )
+        """)
         await db.commit()
 
         # Migration: add new columns to existing tables
@@ -296,6 +307,89 @@ async def calculate_elo_change(winner_elo, loser_elo, k=32):
     expected = 1 / (1 + 10 ** ((loser_elo - winner_elo) / 400))
     change = int(k * (1 - expected))
     return max(change, 8)
+
+
+ACHIEVEMENTS = {
+    "tournament_winner": ("Победитель турнира", "Выиграл турнир"),
+    "tournament_finalist": ("Финалист", "Занял 2-3 место в турнире"),
+    "tournament_participant": ("Участник турнира", "Участвовал в турнире"),
+    "win_streak_3": ("Серия x3", "3 победы подряд"),
+    "win_streak_5": ("Серия x5", "5 побед подряд"),
+    "win_streak_10": ("Серия x10", "10 побед подряд"),
+    "first_win": ("Первая победа", "Первая победа в матче"),
+    "veteran": ("Ветеран", "Сыграл 10+ турниров"),
+    "champion": ("Чемпион", "Выиграл 3+ турнира"),
+    "active_voter": ("Активный зритель", "Проголосовал в 5+ событиях"),
+}
+
+
+async def award_achievement(user_id, achievement_type):
+    if achievement_type not in ACHIEVEMENTS:
+        return False
+    name, desc = ACHIEVEMENTS[achievement_type]
+    async with aiosqlite.connect(DB_NAME) as db:
+        try:
+            await db.execute(
+                "INSERT OR IGNORE INTO achievements (user_id, achievement_type, achievement_name, description) VALUES (?, ?, ?, ?)",
+                (user_id, achievement_type, name, desc)
+            )
+            await db.commit()
+            return True
+        except Exception:
+            return False
+
+
+async def get_user_achievements(user_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM achievements WHERE user_id = ? ORDER BY awarded_at DESC",
+            (user_id,)
+        )
+        return await cursor.fetchall()
+
+
+async def check_and_award_achievements(user_id, chat_id):
+    from database import get_or_create_player
+    player = await get_or_create_player(user_id, chat_id)
+    if not player:
+        return []
+
+    awarded = []
+
+    if player['wins'] >= 1:
+        if await award_achievement(user_id, "first_win"):
+            awarded.append("first_win")
+
+    if player['tournaments_played'] >= 1:
+        if await award_achievement(user_id, "tournament_participant"):
+            awarded.append("tournament_participant")
+
+    if player['tournaments_won'] >= 1:
+        if await award_achievement(user_id, "tournament_winner"):
+            awarded.append("tournament_winner")
+
+    if player['tournaments_won'] >= 3:
+        if await award_achievement(user_id, "champion"):
+            awarded.append("champion")
+
+    if player['tournaments_played'] >= 10:
+        if await award_achievement(user_id, "veteran"):
+            awarded.append("veteran")
+
+    if player['best_streak'] >= 3:
+        if await award_achievement(user_id, "win_streak_3"):
+            awarded.append("win_streak_3")
+
+    if player['best_streak'] >= 5:
+        if await award_achievement(user_id, "win_streak_5"):
+            awarded.append("win_streak_5")
+
+    if player['best_streak'] >= 10:
+        if await award_achievement(user_id, "win_streak_10"):
+            awarded.append("win_streak_10")
+
+    return awarded
 
 
 async def track_chat_member(user_id, chat_id, username=None, display_name=None):

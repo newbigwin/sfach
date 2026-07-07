@@ -87,6 +87,14 @@ async def profile_cmd(message: Message):
         f"Лучшая серия: {player['best_streak']}"
     )
 
+    from database import get_user_achievements
+    achievements = await get_user_achievements(user_id)
+
+    if achievements:
+        text += "\n\nДостижения:\n"
+        for a in achievements:
+            text += f"  {a['achievement_name']}\n"
+
     await message.answer(text)
 
 
