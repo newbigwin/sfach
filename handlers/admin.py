@@ -1,3 +1,6 @@
+import asyncio
+from datetime import datetime, timedelta
+
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import Command
@@ -22,6 +25,7 @@ class CreateEvent(StatesGroup):
     description = State()
     event_date = State()
     confirm = State()
+    editing = State()
 
 
 class CreatePoll(StatesGroup):
@@ -36,6 +40,7 @@ class CreateTournament(StatesGroup):
     description = State()
     max_participants = State()
     confirm = State()
+    editing = State()
 
 
 class CreateMatch(StatesGroup):
@@ -57,22 +62,10 @@ def admin_keyboard():
         [InlineKeyboardButton(text="События", callback_data="admin_events")],
         [InlineKeyboardButton(text="Голосования", callback_data="admin_polls")],
         [InlineKeyboardButton(text="Турниры", callback_data="admin_tournaments")],
-        [InlineKeyboardButton(text="Утихомирить всех", callback_data="mute_all")],
+        [InlineKeyboardButton(text="Утихомирить всех", callback_data="mute_menu")],
         [InlineKeyboardButton(text="Созвать всех", callback_data="summon_all")],
         [InlineKeyboardButton(text="Мануал", callback_data="admin_manual")],
     ])
-
-
-async def check_chat_id(message_or_callback):
-    chat_id = await get_chat_id()
-    if not chat_id:
-        if isinstance(message_or_callback, Message):
-            await message_or_callback.answer("Сначала настройте чат командой /setchat в группе!")
-        else:
-            await message_or_callback.message.answer("Сначала настройте чат командой /setchat в группе!")
-            await message_or_callback.answer()
-        return False
-    return True
 
 
 @router.message(Command("admin"))
@@ -85,9 +78,7 @@ async def admin_panel(message: Message):
         return
 
     await message.answer(
-        "Панель администратора\n\n"
-        "Все действия выполняются здесь, в личных сообщениях.\n"
-        "Результаты публикуются в чате автоматически.",
+        "Панель администратора",
         reply_markup=admin_keyboard()
     )
 
@@ -126,24 +117,22 @@ async def admin_manual(callback: CallbackQuery):
         "3. Бот запомнит чат для публикаций\n\n"
         "СОБЫТИЯ\n"
         "- Создать событие — создаёт пост в чате\n"
-        "- Список событий — просмотр и удаление\n\n"
+        "- Список событий — просмотр и удаление\n"
+        "- Перед публикацией можно редактировать\n\n"
         "ГОЛОСОВАНИЯ\n"
         "- Создать голосование — опрос для участников\n"
-        "  Типы: за событие, за время, общее\n"
         "  Варианты указываются своими\n"
         "- Активные голосования — просмотр и закрытие\n\n"
         "ТУРНИРЫ\n"
         "- Создать турнир — настройка нового турнира\n"
+        "- Перед публикацией можно редактировать\n"
         "- Начать турнир — открытие записи\n"
         "- Создать поединок — выбор двух бойцов\n"
         "- Указать победителя — фиксация результата\n"
-        "- Турнирная сетка — таблица побед/поражений\n"
         "- Завершить турнир — объявление победителя\n\n"
         "МОДЕРАЦИЯ\n"
-        "- Утихомирить всех — мут не-админов\n"
-        "- Созвать всех — упомянуть всех\n\n"
-        "СМЕНА ЧАТА\n"
-        "Чтобы сменить чат, напишите /setchat в новом чате.",
+        "- Утихомирить — мут с таймером\n"
+        "- Созвать всех — упомянуть всех",
         reply_markup=admin_keyboard()
     )
     await callback.answer()
@@ -247,23 +236,87 @@ async def event_date(message: Message, state: FSMContext):
         return
 
     await state.update_data(event_date=message.text)
+    await show_event_preview(message, state)
+
+
+async def show_event_preview(message_or_callback, state: FSMContext):
     data = await state.get_data()
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="Подтвердить", callback_data="confirm_event"),
+            InlineKeyboardButton(text="Редактировать название", callback_data="edit_event_title"),
+            InlineKeyboardButton(text="Редактировать описание", callback_data="edit_event_desc"),
+        ],
+        [
+            InlineKeyboardButton(text="Редактировать дату", callback_data="edit_event_date"),
+        ],
+        [
+            InlineKeyboardButton(text="Опубликовать", callback_data="confirm_event"),
             InlineKeyboardButton(text="Отмена", callback_data="cancel_event"),
         ]
     ])
 
-    await message.answer(
-        f"Подтвердите:\n\n"
+    text = (
+        f"Предпросмотр события:\n\n"
         f"Название: {data['title']}\n"
         f"Описание: {data['description']}\n"
-        f"Дата: {data['event_date']}",
-        reply_markup=kb
+        f"Дата: {data['event_date']}\n\n"
+        f"Нажмите 'Опубликовать' или отредактируйте."
     )
+
+    if isinstance(message_or_callback, Message):
+        await message_or_callback.answer(text, reply_markup=kb)
+    else:
+        await message_or_callback.message.edit_text(text, reply_markup=kb)
+
     await state.set_state(CreateEvent.confirm)
+
+
+@router.callback_query(F.data == "edit_event_title", CreateEvent.confirm)
+async def edit_event_title(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await callback.message.answer("Введите новое название:")
+    await state.set_state(CreateEvent.editing)
+    await state.update_data(edit_field="title")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "edit_event_desc", CreateEvent.confirm)
+async def edit_event_desc(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await callback.message.answer("Введите новое описание:")
+    await state.set_state(CreateEvent.editing)
+    await state.update_data(edit_field="description")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "edit_event_date", CreateEvent.confirm)
+async def edit_event_date(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await callback.message.answer("Введите новую дату:")
+    await state.set_state(CreateEvent.editing)
+    await state.update_data(edit_field="event_date")
+    await callback.answer()
+
+
+@router.message(CreateEvent.editing)
+async def event_editing_save(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    data = await state.get_data()
+    field = data['edit_field']
+    await state.update_data(**{field: message.text})
+    await show_event_preview(message, state)
 
 
 @router.callback_query(F.data == "confirm_event", CreateEvent.confirm)
@@ -597,8 +650,84 @@ async def close_poll_handler(callback: CallbackQuery):
     await callback.answer()
 
 
-@router.callback_query(F.data == "mute_all")
-async def mute_all(callback: CallbackQuery, bot: Bot):
+@router.callback_query(F.data == "mute_menu")
+async def mute_menu(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="30 минут", callback_data="mute_30")],
+        [InlineKeyboardButton(text="1 час", callback_data="mute_60")],
+        [InlineKeyboardButton(text="3 часа", callback_data="mute_180")],
+        [InlineKeyboardButton(text="6 часов", callback_data="mute_360")],
+        [InlineKeyboardButton(text="12 часов", callback_data="mute_720")],
+        [InlineKeyboardButton(text="24 часа", callback_data="mute_1440")],
+        [InlineKeyboardButton(text="До моего снятия", callback_data="mute_infinite")],
+        [InlineKeyboardButton(text="Снять мут со всех", callback_data="unmute_all")],
+        [InlineKeyboardButton(text="Назад", callback_data="admin_back")],
+    ])
+
+    await callback.message.answer("Настройка мута:", reply_markup=kb)
+    await callback.answer()
+
+
+async def do_mute(bot: Bot, chat_id: int, until_date=None):
+    muted_count = 0
+
+    async for member in bot.get_chat_members(chat_id):
+        if member.user.id == ADMIN_ID:
+            continue
+        if member.status in ("creator", "administrator"):
+            continue
+        if member.user.is_bot:
+            continue
+
+        try:
+            await bot.restrict_chat_member(
+                chat_id=chat_id,
+                user_id=member.user.id,
+                permissions={"can_send_messages": False},
+                until_date=until_date
+            )
+            muted_count += 1
+        except Exception:
+            continue
+
+    return muted_count
+
+
+async def do_unmute(bot: Bot, chat_id: int):
+    unmuted_count = 0
+
+    async for member in bot.get_chat_members(chat_id):
+        if member.user.id == ADMIN_ID:
+            continue
+        if member.status in ("creator", "administrator"):
+            continue
+        if member.user.is_bot:
+            continue
+
+        try:
+            await bot.restrict_chat_member(
+                chat_id=chat_id,
+                user_id=member.user.id,
+                permissions={
+                    "can_send_messages": True,
+                    "can_send_media_messages": True,
+                    "can_send_other_messages": True,
+                    "can_add_web_page_previews": True,
+                }
+            )
+            unmuted_count += 1
+        except Exception:
+            continue
+
+    return unmuted_count
+
+
+@router.callback_query(F.data.startswith("mute_") & ~F.data.startswith("mute_menu"))
+async def mute_with_timer(callback: CallbackQuery, bot: Bot):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа!", show_alert=True)
         return
@@ -609,25 +738,61 @@ async def mute_all(callback: CallbackQuery, bot: Bot):
         await callback.answer()
         return
 
-    muted_count = 0
+    minutes = int(callback.data.split("_")[1])
+    until_date = datetime.now() + timedelta(minutes=minutes)
 
-    async for member in bot.get_chat_members(chat_id):
-        if member.user.id == ADMIN_ID:
-            continue
-        if member.status in ("creator", "administrator"):
-            continue
+    muted_count = await do_mute(bot, chat_id, until_date)
 
-        try:
-            await bot.restrict_chat_member(
-                chat_id=chat_id,
-                user_id=member.user.id,
-                permissions={"can_send_messages": False}
-            )
-            muted_count += 1
-        except Exception:
-            continue
+    timer_text = {
+        30: "30 минут", 60: "1 час", 180: "3 часа",
+        360: "6 часов", 720: "12 часов", 1440: "24 часа"
+    }.get(minutes, f"{minutes} минут")
 
-    await callback.message.answer(f"Утихомирены: {muted_count} участников.")
+    await callback.message.answer(f"Утихомирены: {muted_count} участников на {timer_text}.")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "mute_infinite")
+async def mute_infinite(callback: CallbackQuery, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    chat_id = await get_chat_id()
+    if not chat_id:
+        await callback.message.answer("Сначала настройте чат командой /setchat в группе!")
+        await callback.answer()
+        return
+
+    muted_count = await do_mute(bot, chat_id, until_date=None)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Снять мут со всех", callback_data="unmute_all")]
+    ])
+
+    await callback.message.answer(
+        f"Утихомирены: {muted_count} участников (до снятия).\n\n"
+        f"Нажмите кнопку ниже чтобы снять мут.",
+        reply_markup=kb
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "unmute_all")
+async def unmute_all(callback: CallbackQuery, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    chat_id = await get_chat_id()
+    if not chat_id:
+        await callback.message.answer("Сначала настройте чат командой /setchat в группе!")
+        await callback.answer()
+        return
+
+    unmuted_count = await do_unmute(bot, chat_id)
+
+    await callback.message.answer(f"Голос возвращен: {unmuted_count} участникам.")
     await callback.answer()
 
 
@@ -645,27 +810,34 @@ async def summon_all(callback: CallbackQuery, bot: Bot):
 
     members = []
 
-    async for member in bot.get_chat_members(chat_id):
-        if member.user.id == ADMIN_ID:
-            continue
-        if member.user.is_bot:
-            continue
-        if member.status in ("creator", "administrator"):
-            continue
+    try:
+        async for member in bot.get_chat_members(chat_id):
+            if member.user.id == ADMIN_ID:
+                continue
+            if member.user.is_bot:
+                continue
+            if member.status in ("creator", "administrator"):
+                continue
 
-        members.append(member.user.id)
+            members.append(member.user.id)
+    except Exception as e:
+        await callback.message.answer(f"Ошибка при получении участников: {e}")
+        await callback.answer()
+        return
 
     if not members:
         await callback.message.answer("Нет участников.")
         await callback.answer()
         return
 
-    mentions = " ".join([f"[user](tg://user?id={uid})" for uid in members[:50]])
+    mentions = []
+    for uid in members[:50]:
+        mentions.append(f'<a href="tg://user?id={uid}">user</a>')
 
     await bot.send_message(
         chat_id=chat_id,
-        text=f"Созыв!\n\n{mentions}\n\nПриглашаем принять участие!",
-        parse_mode="Markdown"
+        text=f"Созыв!\n\n{' '.join(mentions)}\n\nПриглашаем принять участие!",
+        parse_mode="HTML"
     )
     await callback.message.answer("Созваны все участники!")
     await callback.answer()
@@ -717,23 +889,100 @@ async def tournament_max_participants(message: Message, state: FSMContext):
         return
 
     await state.update_data(max_participants=max_p)
+    await show_tournament_preview(message, state)
+
+
+async def show_tournament_preview(message_or_callback, state: FSMContext):
     data = await state.get_data()
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="Создать", callback_data="confirm_tournament"),
+            InlineKeyboardButton(text="Редактировать название", callback_data="edit_tourney_name"),
+            InlineKeyboardButton(text="Редактировать описание", callback_data="edit_tourney_desc"),
+        ],
+        [
+            InlineKeyboardButton(text="Редактировать макс.", callback_data="edit_tourney_max"),
+        ],
+        [
+            InlineKeyboardButton(text="Опубликовать", callback_data="confirm_tournament"),
             InlineKeyboardButton(text="Отмена", callback_data="cancel_tournament"),
         ]
     ])
 
-    await message.answer(
-        f"Создать турнир?\n\n"
+    text = (
+        f"Предпросмотр турнира:\n\n"
         f"Название: {data['name']}\n"
         f"Описание: {data['description']}\n"
-        f"Макс: {data['max_participants']}",
-        reply_markup=kb
+        f"Макс. участников: {data['max_participants']}\n\n"
+        f"Нажмите 'Опубликовать' или отредактируйте."
     )
+
+    if isinstance(message_or_callback, Message):
+        await message_or_callback.answer(text, reply_markup=kb)
+    else:
+        await message_or_callback.message.edit_text(text, reply_markup=kb)
+
     await state.set_state(CreateTournament.confirm)
+
+
+@router.callback_query(F.data == "edit_tourney_name", CreateTournament.confirm)
+async def edit_tourney_name(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await callback.message.answer("Введите новое название:")
+    await state.set_state(CreateTournament.editing)
+    await state.update_data(edit_field="name")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "edit_tourney_desc", CreateTournament.confirm)
+async def edit_tourney_desc(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await callback.message.answer("Введите новое описание:")
+    await state.set_state(CreateTournament.editing)
+    await state.update_data(edit_field="description")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "edit_tourney_max", CreateTournament.confirm)
+async def edit_tourney_max(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    await callback.message.answer("Введите макс. участников (4, 8, 16, 32):")
+    await state.set_state(CreateTournament.editing)
+    await state.update_data(edit_field="max_participants")
+    await callback.answer()
+
+
+@router.message(CreateTournament.editing)
+async def tournament_editing_save(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    data = await state.get_data()
+    field = data['edit_field']
+
+    if field == "max_participants":
+        try:
+            value = int(message.text)
+            if value not in [4, 8, 16, 32]:
+                await message.answer("Допустимые значения: 4, 8, 16, 32:")
+                return
+        except ValueError:
+            await message.answer("Введите число:")
+            return
+    else:
+        value = message.text
+
+    await state.update_data(**{field: value})
+    await show_tournament_preview(message, state)
 
 
 @router.callback_query(F.data == "confirm_tournament", CreateTournament.confirm)

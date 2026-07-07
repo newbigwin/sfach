@@ -1,11 +1,13 @@
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import CommandStart, Command
 
+from config import ADMIN_ID
 from database import (
     get_events, get_active_polls, get_poll, vote, get_poll_results,
     get_active_tournaments, get_tournament, join_tournament, leave_tournament,
-    get_tournament_participants, get_participant_count, get_tournament_standings
+    get_tournament_participants, get_participant_count, get_tournament_standings,
+    get_setting
 )
 
 router = Router()
@@ -252,7 +254,7 @@ async def user_tournament_detail(callback: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("join_tournament_"))
-async def join_tournament_handler(callback: CallbackQuery):
+async def join_tournament_handler(callback: CallbackQuery, bot: Bot):
     tournament_id = int(callback.data.split("_")[2])
     tournament = await get_tournament(tournament_id)
 
@@ -281,7 +283,18 @@ async def join_tournament_handler(callback: CallbackQuery):
 
     if success:
         await callback.answer("Вы записаны на турнир!", show_alert=True)
-        await callback.message.edit_text(f"Вы записаны на турнир \"{tournament['name']}\"!")
+
+        chat_id = await get_setting("chat_id")
+        if chat_id:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"{display_name} записался на турнир \"{tournament['name']}\""
+            )
+
+        await bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"{display_name} (@{user.username or 'нет username'}) записался на турнир \"{tournament['name']}\""
+        )
     else:
         await callback.answer("Вы уже записаны!", show_alert=True)
 
