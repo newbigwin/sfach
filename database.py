@@ -5,6 +5,12 @@ from config import DB_NAME
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+        await db.execute("""
             CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
@@ -86,6 +92,22 @@ async def init_db():
             )
         """)
         await db.commit()
+
+
+async def set_setting(key, value):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (key, str(value))
+        )
+        await db.commit()
+
+
+async def get_setting(key, default=None):
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = await cursor.fetchone()
+        return row[0] if row else default
 
 
 async def add_event(title, description, event_date, created_by, chat_id, message_id=None):

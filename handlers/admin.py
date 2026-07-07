@@ -4,14 +4,14 @@ from aiogram.filters import Command, ChatType
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from config import ADMIN_ID, CHAT_ID
+from config import ADMIN_ID
 from database import (
     add_event, get_events, delete_event, add_poll, get_active_polls,
     get_poll, vote, get_poll_results, close_poll, get_event,
     create_tournament, get_tournament, get_active_tournaments, start_tournament,
     get_tournament_participants, get_participant_count, finish_tournament,
     create_match, get_match, set_match_winner, get_tournament_matches,
-    get_tournament_standings, delete_tournament
+    get_tournament_standings, delete_tournament, set_setting, get_setting
 )
 
 router = Router()
@@ -48,6 +48,10 @@ def is_admin(user_id: int) -> bool:
     return user_id == ADMIN_ID
 
 
+async def get_chat_id():
+    return await get_setting("chat_id")
+
+
 def admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="События", callback_data="admin_events")],
@@ -57,6 +61,18 @@ def admin_keyboard():
         [InlineKeyboardButton(text="Созвать всех", callback_data="summon_all")],
         [InlineKeyboardButton(text="Мануал", callback_data="admin_manual")],
     ])
+
+
+async def check_chat_id(message_or_callback):
+    chat_id = await get_chat_id()
+    if not chat_id:
+        if isinstance(message_or_callback, Message):
+            await message_or_callback.answer("Сначала настройте чат командой /setchat в группе!")
+        else:
+            await message_or_callback.message.answer("Сначала настройте чат командой /setchat в группе!")
+            await message_or_callback.answer()
+        return False
+    return True
 
 
 @router.message(Command("admin"), ChatType.PRIVATE)
@@ -83,8 +99,7 @@ async def set_chat(message: Message):
         await message.answer("Используйте эту команду в групповом чате!")
         return
 
-    import config
-    config.CHAT_ID = message.chat.id
+    await set_setting("chat_id", message.chat.id)
 
     await message.answer(
         f"Чат настроен!\n\n"
@@ -112,6 +127,7 @@ async def admin_manual(callback: CallbackQuery):
         "ГОЛОСОВАНИЯ\n"
         "- Создать голосование — опрос для участников\n"
         "  Типы: за событие, за время, общее\n"
+        "  Варианты указываются своими\n"
         "- Активные голосования — просмотр и закрытие\n\n"
         "ТУРНИРЫ\n"
         "- Создать турнир — настройка нового турнира\n"
@@ -122,7 +138,9 @@ async def admin_manual(callback: CallbackQuery):
         "- Завершить турнир — объявление победителя\n\n"
         "МОДЕРАЦИЯ\n"
         "- Утихомирить всех — мут не-админов\n"
-        "- Созвать всех — упомянуть всех",
+        "- Созвать всех — упомянуть всех\n\n"
+        "СМЕНА ЧАТА\n"
+        "Чтобы сменить чат, напишите /setchat в новом чате.",
         reply_markup=admin_keyboard()
     )
     await callback.answer()
@@ -251,8 +269,8 @@ async def confirm_event(callback: CallbackQuery, state: FSMContext, bot: Bot):
         await callback.answer("Нет доступа!", show_alert=True)
         return
 
-    import config
-    if config.CHAT_ID == 0:
+    chat_id = await get_chat_id()
+    if not chat_id:
         await callback.message.answer("Сначала настройте чат командой /setchat в группе!")
         await callback.answer()
         return
@@ -264,7 +282,7 @@ async def confirm_event(callback: CallbackQuery, state: FSMContext, bot: Bot):
         description=data['description'],
         event_date=data['event_date'],
         created_by=callback.from_user.id,
-        chat_id=CHAT_ID
+        chat_id=chat_id
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -272,7 +290,7 @@ async def confirm_event(callback: CallbackQuery, state: FSMContext, bot: Bot):
     ])
 
     await bot.send_message(
-        chat_id=CHAT_ID,
+        chat_id=chat_id,
         text=(
             f"{data['title']}\n\n"
             f"{data['description']}\n\n"
@@ -332,7 +350,8 @@ async def list_events(callback: CallbackQuery):
         await callback.answer("Нет доступа!", show_alert=True)
         return
 
-    events = await get_events(0)
+    chat_id = await get_chat_id()
+    events = await get_events(chat_id) if chat_id else []
 
     if not events:
         await callback.message.answer("Нет событий.")
@@ -451,8 +470,8 @@ async def confirm_poll(callback: CallbackQuery, state: FSMContext, bot: Bot):
         await callback.answer("Нет доступа!", show_alert=True)
         return
 
-    import config
-    if config.CHAT_ID == 0:
+    chat_id = await get_chat_id()
+    if not chat_id:
         await callback.message.answer("Сначала настройте чат командой /setchat в группе!")
         await callback.answer()
         return
@@ -464,7 +483,7 @@ async def confirm_poll(callback: CallbackQuery, state: FSMContext, bot: Bot):
         options=data['options'],
         poll_type=data['poll_type'],
         created_by=callback.from_user.id,
-        chat_id=CHAT_ID
+        chat_id=chat_id
     )
 
     kb_buttons = []
@@ -474,7 +493,7 @@ async def confirm_poll(callback: CallbackQuery, state: FSMContext, bot: Bot):
     kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
 
     await bot.send_message(
-        chat_id=CHAT_ID,
+        chat_id=chat_id,
         text=f"Голосование: {data['question']}",
         reply_markup=kb
     )
@@ -581,13 +600,12 @@ async def mute_all(callback: CallbackQuery, bot: Bot):
         await callback.answer("Нет доступа!", show_alert=True)
         return
 
-    import config
-    if config.CHAT_ID == 0:
+    chat_id = await get_chat_id()
+    if not chat_id:
         await callback.message.answer("Сначала настройте чат командой /setchat в группе!")
         await callback.answer()
         return
 
-    chat_id = config.CHAT_ID
     muted_count = 0
 
     async for member in bot.get_chat_members(chat_id):
@@ -616,13 +634,12 @@ async def summon_all(callback: CallbackQuery, bot: Bot):
         await callback.answer("Нет доступа!", show_alert=True)
         return
 
-    import config
-    if config.CHAT_ID == 0:
+    chat_id = await get_chat_id()
+    if not chat_id:
         await callback.message.answer("Сначала настройте чат командой /setchat в группе!")
         await callback.answer()
         return
 
-    chat_id = config.CHAT_ID
     members = []
 
     async for member in bot.get_chat_members(chat_id):
@@ -722,8 +739,8 @@ async def confirm_tournament(callback: CallbackQuery, state: FSMContext, bot: Bo
         await callback.answer("Нет доступа!", show_alert=True)
         return
 
-    import config
-    if config.CHAT_ID == 0:
+    chat_id = await get_chat_id()
+    if not chat_id:
         await callback.message.answer("Сначала настройте чат командой /setchat в группе!")
         await callback.answer()
         return
@@ -735,7 +752,7 @@ async def confirm_tournament(callback: CallbackQuery, state: FSMContext, bot: Bo
         description=data['description'],
         max_participants=data['max_participants'],
         created_by=callback.from_user.id,
-        chat_id=CHAT_ID
+        chat_id=chat_id
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -743,7 +760,7 @@ async def confirm_tournament(callback: CallbackQuery, state: FSMContext, bot: Bo
     ])
 
     await bot.send_message(
-        chat_id=CHAT_ID,
+        chat_id=chat_id,
         text=(
             f"{data['name']}\n\n"
             f"{data['description']}\n\n"
@@ -775,7 +792,8 @@ async def list_tournaments(callback: CallbackQuery):
         await callback.answer("Нет доступа!", show_alert=True)
         return
 
-    tournaments = await get_active_tournaments(0)
+    chat_id = await get_chat_id()
+    tournaments = await get_active_tournaments(chat_id) if chat_id else []
 
     if not tournaments:
         await callback.message.answer("Нет активных турниров.")
@@ -851,8 +869,8 @@ async def start_tournament_handler(callback: CallbackQuery, bot: Bot):
         await callback.answer("Нет доступа!", show_alert=True)
         return
 
-    import config
-    if config.CHAT_ID == 0:
+    chat_id = await get_chat_id()
+    if not chat_id:
         await callback.message.answer("Сначала настройте чат командой /setchat в группе!")
         await callback.answer()
         return
@@ -871,7 +889,7 @@ async def start_tournament_handler(callback: CallbackQuery, bot: Bot):
     mentions = " ".join([f"[user](tg://user?id={p['user_id']})" for p in participants])
 
     await bot.send_message(
-        chat_id=CHAT_ID,
+        chat_id=chat_id,
         text=f"Турнир \"{tournament['name']}\" начат!\n\nУчастники:\n{mentions}",
         parse_mode="Markdown"
     )
@@ -980,8 +998,8 @@ async def confirm_match(callback: CallbackQuery, state: FSMContext, bot: Bot):
         await callback.answer("Нет доступа!", show_alert=True)
         return
 
-    import config
-    if config.CHAT_ID == 0:
+    chat_id = await get_chat_id()
+    if not chat_id:
         await callback.message.answer("Сначала настройте чат командой /setchat в группе!")
         await callback.answer()
         return
@@ -1014,7 +1032,7 @@ async def confirm_match(callback: CallbackQuery, state: FSMContext, bot: Bot):
     ])
 
     await bot.send_message(
-        chat_id=CHAT_ID,
+        chat_id=chat_id,
         text=f"Поединок!\n\n{p1_name} vs {p2_name}\n\nКто победил?",
         reply_markup=kb
     )
@@ -1127,8 +1145,8 @@ async def finish_tournament_handler(callback: CallbackQuery, bot: Bot):
         await callback.answer("Нет доступа!", show_alert=True)
         return
 
-    import config
-    if config.CHAT_ID == 0:
+    chat_id = await get_chat_id()
+    if not chat_id:
         await callback.message.answer("Сначала настройте чат командой /setchat в группе!")
         await callback.answer()
         return
@@ -1144,7 +1162,7 @@ async def finish_tournament_handler(callback: CallbackQuery, bot: Bot):
         winner_name = winner['display_name'] or winner['username'] or str(winner['user_id'])
 
         await bot.send_message(
-            chat_id=CHAT_ID,
+            chat_id=chat_id,
             text=(
                 f"Турнир \"{tournament['name']}\" завершен!\n\n"
                 f"Победитель: {winner_name}\n"
@@ -1153,7 +1171,7 @@ async def finish_tournament_handler(callback: CallbackQuery, bot: Bot):
         )
     else:
         await bot.send_message(
-            chat_id=CHAT_ID,
+            chat_id=chat_id,
             text=f"Турнир \"{tournament['name']}\" завершен!"
         )
 
