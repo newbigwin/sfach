@@ -37,6 +37,10 @@ async def track_user(message: Message):
 
 @router.message(CommandStart())
 async def start(message: Message):
+    configured = await get_chat_id()
+    if message.chat.type != "private" and configured and str(message.chat.id) != str(configured):
+        return
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="События", callback_data="user_events")],
         [InlineKeyboardButton(text="Голосования", callback_data="user_polls")],
