@@ -2694,13 +2694,12 @@ async def finish_tournament_handler(callback: CallbackQuery, bot: Bot):
         name = p['display_name'] or str(p['user_id'])
         if p['username']:
             name += f" (@{p['username']})"
-        row = [InlineKeyboardButton(text=name, callback_data=f"noop")]
         for place in range(1, prize_places + 1):
-            row.append(InlineKeyboardButton(
-                text=f"{place} место",
-                callback_data=f"assign_prize_{tournament_id}_{p['user_id']}_{place}"
-            ))
-        kb_buttons.append(row)
+            place_label = {1: "1 место", 2: "2 место", 3: "3 место"}.get(place, f"{place} место")
+            kb_buttons.append([InlineKeyboardButton(
+                text=f"{name} — {place_label}",
+                callback_data=f"apz{tournament_id}x{p['user_id']}x{place}"
+            )])
 
     kb_buttons.append([
         InlineKeyboardButton(text="Объявить результаты", callback_data=f"announce_results_{tournament_id}")
@@ -2714,16 +2713,16 @@ async def finish_tournament_handler(callback: CallbackQuery, bot: Bot):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("assign_prize_"))
+@router.callback_query(F.data.startswith("apz"))
 async def assign_prize_handler(callback: CallbackQuery, bot: Bot):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа!", show_alert=True)
         return
 
-    parts = callback.data.split("_")
-    tournament_id = int(parts[2])
-    user_id = int(parts[3])
-    place = int(parts[4])
+    parts = callback.data.split("x")
+    tournament_id = int(parts[0][3:])
+    user_id = int(parts[1])
+    place = int(parts[2])
 
     tournament = await get_tournament(tournament_id)
     participants = await get_tournament_participants(tournament_id)
