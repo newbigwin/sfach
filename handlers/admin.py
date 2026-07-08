@@ -2673,44 +2673,51 @@ async def finish_tournament_handler(callback: CallbackQuery, bot: Bot):
         return
 
     tournament_id = int(callback.data.split("_")[2])
+    await show_prize_places(callback, tournament_id)
+
+
+async def show_prize_places(callback_or_message, tournament_id, edit=False):
     tournament = await get_tournament(tournament_id)
-
     if not tournament:
-        await callback.answer("Турнир не найден!", show_alert=True)
-        return
-
-    participants = await get_tournament_participants(tournament_id)
-    if not participants:
-        await callback.answer("Нет участников!", show_alert=True)
+        if hasattr(callback_or_message, 'answer'):
+            await callback_or_message.answer("Турнир не найден!")
         return
 
     prize_places = tournament['prize_places'] or 1
+    prizes = await get_tournament_prizes(tournament_id)
+    assigned = {p['place']: p for p in prizes}
 
-    text = f"Назначьте призовые места для турнира \"{tournament['name']}\":\n\n"
-    text += f"Количество призовых мест: {prize_places}\n\n"
+    text = f"Назначьте призовые места для \"{tournament['name']}\":\n\n"
 
     kb_buttons = []
-    for p in participants:
-        name = p['display_name'] or str(p['user_id'])
-        if p['username']:
-            name += f" (@{p['username']})"
-        for place in range(1, prize_places + 1):
-            place_label = {1: "1 место", 2: "2 место", 3: "3 место"}.get(place, f"{place} место")
+    for place in range(1, prize_places + 1):
+        place_label = {1: "1 место", 2: "2 место", 3: "3 место"}.get(place, f"{place} место")
+        if place in assigned:
+            p = assigned[place]
+            text += f"{place_label}: ID {p['user_id']}\n"
             kb_buttons.append([InlineKeyboardButton(
-                text=f"{name} — {place_label}",
-                callback_data=f"apz{tournament_id}x{p['user_id']}x{place}"
+                text=f"{place_label} — ID {p['user_id']}",
+                callback_data=f"apz{tournament_id}x{place}"
+            )])
+        else:
+            kb_buttons.append([InlineKeyboardButton(
+                text=f"{place_label} — выбрать",
+                callback_data=f"apz{tournament_id}x{place}"
             )])
 
     kb_buttons.append([
         InlineKeyboardButton(text="Объявить результаты", callback_data=f"announce_results_{tournament_id}")
     ])
     kb_buttons.append([
-        InlineKeyboardButton(text="Отмена", callback_data=f"tournament_details_{tournament_id}")
+        InlineKeyboardButton(text="Назад", callback_data=f"tournament_details_{tournament_id}")
     ])
 
     kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
-    await callback.message.answer(text, reply_markup=kb)
-    await callback.answer()
+
+    if edit and hasattr(callback_or_message, 'edit_text'):
+        await callback_or_message.edit_text(text, reply_markup=kb)
+    else:
+        await callback_or_message.answer(text, reply_markup=kb)
 
 
 @router.callback_query(F.data.startswith("apz"))
@@ -2721,27 +2728,82 @@ async def assign_prize_handler(callback: CallbackQuery, bot: Bot):
 
     parts = callback.data.split("x")
     tournament_id = int(parts[0][3:])
+    place = int(parts[1])
+
+    participants = await get_tournament_participants(tournament_id)
+
+    text = f"Выберите игрока для {place} места:\n\n"
+
+    kb_buttons = []
+    for p in participants:
+        name = p['display_name'] or str(p['user_id'])
+        if p['username']:
+            name += f" (@{p['username']})"
+        kb_buttons.append([
+            InlineKeyboardButton(
+                text=name,
+                callback_data=f"asp{tournament_id}x{p['user_id']}x{place}"
+            ),
+            InlineKeyboardButton(
+                text="Профиль",
+                callback_data=f"upf{p['user_id']}"
+            )
+        ])
+
+    kb_buttons.append([
+        InlineKeyboardButton(text="Назад", callback_data=f"finish_tournament_{tournament_id}")
+    ])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
+    await callback.message.edit_text(text, reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("asp"))
+async def select_prize_player(callback: CallbackQuery, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    parts = callback.data.split("x")
+    tournament_id = int(parts[0][3:])
     user_id = int(parts[1])
     place = int(parts[2])
 
+    await set_tournament_prize(tournament_id, user_id, place, f"{place} место")
+
     tournament = await get_tournament(tournament_id)
-    participants = await get_tournament_participants(tournament_id)
+    prizes = await get_tournament_prizes(tournament_id)
+    assigned = {p['place']: p for p in prizes}
+    prize_places = tournament['prize_places'] or 1
 
-    place_names = {1: "победитель", 2: "второе место", 3: "третье место"}
-    place_name = place_names.get(place, f"{place} место")
+    text = f"Назначьте призовые места для \"{tournament['name']}\":\n\n"
 
-    user = None
-    for p in participants:
-        if p['user_id'] == user_id:
-            user = p
-            break
+    kb_buttons = []
+    for p in range(1, prize_places + 1):
+        place_label = {1: "1 место", 2: "2 место", 3: "3 место"}.get(p, f"{p} место")
+        if p in assigned:
+            prize = assigned[p]
+            kb_buttons.append([InlineKeyboardButton(
+                text=f"{place_label} — ID {prize['user_id']}",
+                callback_data=f"apz{tournament_id}x{p}"
+            )])
+        else:
+            kb_buttons.append([InlineKeyboardButton(
+                text=f"{place_label} — выбрать",
+                callback_data=f"apz{tournament_id}x{p}"
+            )])
 
-    if user:
-        name = user['display_name'] or str(user['user_id'])
-        await set_tournament_prize(tournament_id, user_id, place, place_name)
-        await callback.answer(f"{name} — {place_name}", show_alert=True)
-    else:
-        await callback.answer("Участник не найден!", show_alert=True)
+    kb_buttons.append([
+        InlineKeyboardButton(text="Объявить результаты", callback_data=f"announce_results_{tournament_id}")
+    ])
+    kb_buttons.append([
+        InlineKeyboardButton(text="Назад", callback_data=f"tournament_details_{tournament_id}")
+    ])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
+    await callback.message.edit_text(text, reply_markup=kb)
+    await callback.answer("Место назначено!")
 
 
 @router.callback_query(F.data.startswith("announce_results_"))

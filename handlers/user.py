@@ -905,3 +905,51 @@ async def cmd_tournament_stats(message: Message):
         text += "Пока нет данных."
 
     await message.answer(text)
+
+
+@router.callback_query(F.data.startswith("upf"))
+async def user_profile(callback: CallbackQuery):
+    user_id = int(callback.data[3:])
+
+    from database import aiosqlite, DB_NAME
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+
+        cursor = await db.execute("SELECT * FROM player_stats WHERE user_id = ?", (user_id,))
+        stats = await cursor.fetchone()
+
+        cursor = await db.execute("SELECT balance FROM user_coins WHERE user_id = ?", (user_id,))
+        coins = await cursor.fetchone()
+
+        cursor = await db.execute("SELECT * FROM achievements WHERE user_id = ?", (user_id,))
+        achievements = await cursor.fetchall()
+
+    text = f"Профиль ID {user_id}:\n\n"
+
+    if stats:
+        text += (
+            f"ELO: {stats['elo']}\n"
+            f"Побед: {stats['wins']} | Поражений: {stats['losses']}\n"
+            f"Серия побед: {stats['win_streak']} (макс: {stats['max_win_streak']})\n"
+            f"Турниров: {stats['tournaments_played']} (побед: {stats['tournaments_won']})\n"
+        )
+    else:
+        text += "Нет статистики\n"
+
+    if coins:
+        text += f"Монеты: {coins['balance']}\n"
+
+    if achievements:
+        text += "\nДостижения:\n"
+        from database import ACHIEVEMENTS
+        for a in achievements:
+            key = a['achievement']
+            if key in ACHIEVEMENTS:
+                text += f"  {ACHIEVEMENTS[key][0]}\n"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Написать", url=f"tg://user?id={user_id}")]
+    ])
+
+    await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
