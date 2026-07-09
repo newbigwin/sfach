@@ -647,7 +647,7 @@ async def reminder_time(message: Message, state: FSMContext):
         await message.answer("Неверный формат. Попробуйте снова:")
         return
 
-    await state.update_data(remind_at=remind_at.isoformat())
+    await state.update_data(remind_at=remind_at.strftime('%Y-%m-%d %H:%M:%S'))
 
     data = await state.get_data()
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -729,11 +729,7 @@ async def list_reminders(callback: CallbackQuery):
         kb_buttons.append([
             InlineKeyboardButton(
                 text=f"{r['title'][:30]} ({dt.strftime('%d.%m %H:%M')})",
-                callback_data=f"noop"
-            ),
-            InlineKeyboardButton(
-                text="Удалить",
-                callback_data=f"delete_reminder_{r['id']}"
+                callback_data=f"drd{r['id']}"
             )
         ])
 
@@ -751,7 +747,42 @@ async def delete_reminder_handler(callback: CallbackQuery):
 
     reminder_id = int(callback.data.split("_")[2])
     await delete_reminder(reminder_id)
-    await callback.message.answer("Напоминание удалено.")
+    await callback.message.edit_text("Напоминание удалено.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("drd"))
+async def reminder_detail(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    reminder_id = int(callback.data[3:])
+
+    from database import aiosqlite, DB_NAME
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM reminders WHERE id = ?", (reminder_id,))
+        r = await cursor.fetchone()
+
+    if not r:
+        await callback.answer("Напоминание не найдено!")
+        return
+
+    from datetime import datetime
+    dt = datetime.fromisoformat(r['remind_at'])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Удалить", callback_data=f"delete_reminder_{r['id']}")]
+    ])
+
+    await callback.message.edit_text(
+        f"Напоминание:\n\n"
+        f"Текст: {r['title']}\n"
+        f"Когда: {dt.strftime('%d.%m %H:%M')}\n"
+        f"Статус: ожидает",
+        reply_markup=kb
+    )
     await callback.answer()
 
 
