@@ -22,19 +22,6 @@ from database import (
 router = Router()
 
 
-@router.message()
-async def track_user(message: Message):
-    if message.from_user and message.chat.type != "private":
-        chat_id = await get_chat_id()
-        if chat_id and str(message.chat.id) == str(chat_id):
-            await track_chat_member(
-                user_id=message.from_user.id,
-                chat_id=message.chat.id,
-                username=message.from_user.username,
-                display_name=message.from_user.full_name
-            )
-
-
 @router.message(CommandStart())
 async def start(message: Message):
     configured = await get_chat_id()
@@ -953,3 +940,16 @@ async def user_profile(callback: CallbackQuery):
 
     await callback.message.answer(text, reply_markup=kb)
     await callback.answer()
+
+
+@router.message()
+async def track_user(message: Message):
+    if message.from_user and message.chat.type != "private":
+        chat_id = await get_chat_id()
+        if chat_id and str(message.chat.id) == str(chat_id):
+            await track_chat_member(
+                user_id=message.from_user.id,
+                chat_id=message.chat.id,
+                username=message.from_user.username,
+                display_name=message.from_user.full_name
+            )
