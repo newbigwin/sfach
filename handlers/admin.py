@@ -386,7 +386,8 @@ async def confirm_recurring(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "cancel_recurring")
 async def cancel_recurring(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.message.answer("Создание отменено.")
+    await callback.answer("Отменено", show_alert=True)
+    await callback.message.delete()
     await callback.answer()
 
 
@@ -584,7 +585,8 @@ async def delete_recurring_handler(callback: CallbackQuery):
 
     event_id = int(callback.data.split("_")[2])
     await delete_recurring_event(event_id)
-    await callback.message.answer("Событие удалено.")
+    await callback.answer("Удалено!", show_alert=True)
+    await callback.message.delete()
     await callback.answer()
 
 
@@ -687,7 +689,7 @@ async def confirm_reminder(callback: CallbackQuery, state: FSMContext):
     )
 
     await state.clear()
-    await callback.message.answer("Напоминание создано!")
+    await callback.message.delete()
     await callback.answer()
 
 
@@ -698,7 +700,8 @@ async def cancel_reminder(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.clear()
-    await callback.message.answer("Создание отменено.")
+    await callback.answer("Отменено", show_alert=True)
+    await callback.message.delete()
     await callback.answer()
 
 
@@ -1055,7 +1058,8 @@ async def remove_event_image(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(image_file_id=None)
-    await callback.message.answer("Изображение удалено!")
+    await callback.answer("Удалено!", show_alert=True)
+    await callback.message.delete()
     await show_event_preview(callback, state)
     await callback.answer()
 
@@ -1169,8 +1173,8 @@ async def confirm_event(callback: CallbackQuery, state: FSMContext, bot: Bot):
     await update_event_message_id(event_id, msg.message_id)
 
     await state.clear()
-    await callback.message.answer("Событие опубликовано в чате!")
-    await callback.answer()
+    await callback.answer("Опубликовано!", show_alert=True)
+    await callback.message.delete()
 
 
 @router.callback_query(F.data == "cancel_event")
@@ -1180,7 +1184,8 @@ async def cancel_event(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.clear()
-    await callback.message.answer("Создание отменено.")
+    await callback.answer("Отменено", show_alert=True)
+    await callback.message.delete()
     await callback.answer()
 
 
@@ -1305,7 +1310,8 @@ async def delete_event_handler(callback: CallbackQuery):
 
     event_id = int(callback.data.split("_")[2])
     await delete_event(event_id)
-    await callback.message.answer("Событие удалено.")
+    await callback.answer("Удалено!", show_alert=True)
+    await callback.message.delete()
     await callback.answer()
 
 
@@ -1524,7 +1530,8 @@ async def remove_poll_image(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(image_file_id=None)
-    await callback.message.answer("Изображение удалено!")
+    await callback.answer("Удалено!", show_alert=True)
+    await callback.message.delete()
     await show_poll_preview(callback, state)
     await callback.answer()
 
@@ -1588,8 +1595,8 @@ async def confirm_poll(callback: CallbackQuery, state: FSMContext, bot: Bot):
     await update_poll_message_id(poll_id, msg.message_id)
 
     await state.clear()
-    await callback.message.answer("Голосование опубликовано в чате!")
-    await callback.answer()
+    await callback.answer("Опубликовано!", show_alert=True)
+    await callback.message.delete()
 
 
 @router.callback_query(F.data == "cancel_poll")
@@ -1599,7 +1606,8 @@ async def cancel_poll(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.clear()
-    await callback.message.answer("Создание отменено.")
+    await callback.answer("Отменено", show_alert=True)
+    await callback.message.delete()
     await callback.answer()
 
 
@@ -2115,7 +2123,8 @@ async def remove_tourney_image(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(image_file_id=None)
-    await callback.message.answer("Изображение удалено!")
+    await callback.answer("Удалено!", show_alert=True)
+    await callback.message.delete()
     await show_tournament_preview(callback, state)
     await callback.answer()
 
@@ -2252,8 +2261,8 @@ async def confirm_tournament(callback: CallbackQuery, state: FSMContext, bot: Bo
     await update_tournament_message_id(tournament_id, msg.message_id)
 
     await state.clear()
-    await callback.message.answer("Турнир опубликован в чате!")
-    await callback.answer()
+    await callback.answer("Опубликовано!", show_alert=True)
+    await callback.message.delete()
 
 
 @router.callback_query(F.data == "cancel_tournament")
@@ -2263,7 +2272,8 @@ async def cancel_tournament(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.clear()
-    await callback.message.answer("Создание отменено.")
+    await callback.answer("Отменено", show_alert=True)
+    await callback.message.delete()
     await callback.answer()
 
 
@@ -2429,8 +2439,8 @@ async def publish_bracket(callback: CallbackQuery, bot: Bot):
         text += f"Раунд {m['round_num']}: {p1_link} vs {p2_link}\n"
 
     await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
-    await callback.message.answer("Сетка опубликована в чате!")
-    await callback.answer()
+    await callback.answer("Опубликовано!", show_alert=True)
+    await callback.message.delete()
 
 
 @router.callback_query(F.data.startswith("start_tournament_"))
@@ -2466,8 +2476,8 @@ async def start_tournament_handler(callback: CallbackQuery, bot: Bot):
         text=f"Турнир \"{tournament['name']}\" начат!\n\nУчастники: {mentions}",
         parse_mode="Markdown"
     )
-    await callback.message.answer("Турнир начат и объявлен в чате!")
-    await callback.answer()
+    await callback.answer("Турнир начат!", show_alert=True)
+    await callback.message.delete()
 
 
 @router.callback_query(F.data.startswith("delete_tournament_"))
@@ -2478,7 +2488,8 @@ async def delete_tournament_handler(callback: CallbackQuery):
 
     tournament_id = int(callback.data.split("_")[2])
     await delete_tournament(tournament_id)
-    await callback.message.answer("Турнир удален.")
+    await callback.answer("Удалено!", show_alert=True)
+    await callback.message.delete()
     await callback.answer()
 
 
@@ -2626,8 +2637,8 @@ async def confirm_match(callback: CallbackQuery, state: FSMContext, bot: Bot):
     )
 
     await state.clear()
-    await callback.message.answer("Поединок опубликован в чате!")
-    await callback.answer()
+    await callback.answer("Опубликовано!", show_alert=True)
+    await callback.message.delete()
 
 
 @router.callback_query(F.data == "cancel_match")
@@ -2637,7 +2648,8 @@ async def cancel_match(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.clear()
-    await callback.message.answer("Создание отменено.")
+    await callback.answer("Отменено", show_alert=True)
+    await callback.message.delete()
     await callback.answer()
 
 
@@ -2660,7 +2672,10 @@ async def set_winner_handler(callback: CallbackQuery, bot: Bot):
     winner = next((p for p in participants if p['user_id'] == winner_id), None)
     winner_name = winner['display_name'] or winner['username'] or str(winner_id)
 
-    await callback.message.edit_text(f"Победитель: {winner_name}")
+    await callback.message.edit_text(
+        f'<a href="tg://user?id={winner_id}">{winner_name}</a> победил!',
+        parse_mode="HTML"
+    )
     await callback.answer()
 
 
@@ -2947,8 +2962,8 @@ async def announce_results_handler(callback: CallbackQuery, bot: Bot):
                 text += f"  {ACHIEVEMENTS[a][0]}\n"
 
     await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
-    await callback.message.answer("Результаты объявлены в чате! Рейтинги обновлены.")
-    await callback.answer()
+    await callback.answer("Готово!", show_alert=True)
+    await callback.message.delete()
 
 
 @router.callback_query(F.data == "admin_quizzes")
