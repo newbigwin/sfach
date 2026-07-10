@@ -66,7 +66,12 @@ async def profile_cmd(message: Message):
     if message.chat.type != "private" and str(message.chat.id) != str(configured):
         return
 
-    user_id = message.from_user.id
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target_user = message.reply_to_message.from_user
+    else:
+        target_user = message.from_user
+
+    user_id = target_user.id
     chat_id = message.chat.id
 
     player = await get_or_create_player(user_id, chat_id)
@@ -75,7 +80,7 @@ async def profile_cmd(message: Message):
     winrate = (player['wins'] * 100 // total_games) if total_games > 0 else 0
 
     text = (
-        f"Профиль: {message.from_user.full_name}\n\n"
+        f"Профиль: {target_user.full_name}\n\n"
         f"Рейтинг (ELO): {player['elo']}\n"
         f"Победы: {player['wins']}\n"
         f"Поражения: {player['losses']}\n"
@@ -94,7 +99,11 @@ async def profile_cmd(message: Message):
         for a in achievements:
             text += f"  {a['achievement_name']}\n"
 
-    await message.answer(text)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Написать", url=f"tg://user?id={user_id}")]
+    ])
+
+    await message.answer(text, reply_markup=kb)
 
 
 @router.message(Command("leaderboard"))
