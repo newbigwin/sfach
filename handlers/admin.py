@@ -848,10 +848,9 @@ async def admin_manual(callback: CallbackQuery):
         "Мут на 30м/1ч/3ч/6ч/12ч/24ч\n"
         "Бесконечный мут\n"
         "Снять мут\n"
-        "Созвать всех участников",
-        reply_markup=admin_keyboard()
+        "Созвать всех участников"
     )
-    await callback.message.answer(text)
+    await callback.message.answer(text, reply_markup=admin_keyboard())
     await callback.answer()
 
 
