@@ -3081,6 +3081,10 @@ class BroadcastState(StatesGroup):
     waiting_content = State()
 
 
+class AdminBalance(StatesGroup):
+    waiting_reply = State()
+
+
 @router.callback_query(F.data == "send_broadcast")
 async def send_broadcast_start(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
@@ -3172,32 +3176,36 @@ async def admin_stats_menu(callback: CallbackQuery):
 
 
 @router.callback_query(F.data == "admin_balance")
-async def admin_balance_request(callback: CallbackQuery):
+async def admin_balance_request(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа!", show_alert=True)
         return
-    await callback.message.answer("Ответьте на сообщение пользователя командой /balance, чтобы посмотреть его баланс.")
+    await callback.message.answer("Ответьте на сообщение пользователя, чтобы посмотреть его баланс.")
+    await state.set_state(AdminBalance.waiting_reply)
     await callback.answer()
 
 
-@router.message(Command("balance"))
-async def admin_balance_check(message: Message, bot: Bot):
+@router.message(Command("history"))
+async def admin_balance_history(message: Message, bot: Bot):
     if not is_admin(message.from_user.id):
         return
     if not message.reply_to_message or not message.reply_to_message.from_user:
         return
 
     target_id = message.reply_to_message.from_user.id
-    coins = await get_user_coins(target_id)
-    from database import get_user_name
+    from database import get_user_name, get_balance_history
     name = await get_user_name(target_id)
     link = f'<a href="tg://user?id={target_id}">{name}</a>'
+    history = await get_balance_history(target_id, 15)
 
-    text = (
-        f"Профиль: {link}\n\n"
-        f"Баланс: {coins['balance']} монет\n"
-        f"Выиграно: {coins['total_won']} | Проиграно: {coins['total_lost']}"
-    )
+    text = f"История баланса: {link}\n\n"
+
+    if history:
+        for h in history:
+            sign = "+" if h['amount'] > 0 else ""
+            text += f"{sign}{h['amount']} — {h['reason']}\n"
+    else:
+        text += "Пока нет операций."
 
     await message.answer(text, parse_mode="HTML")
 
@@ -3234,3 +3242,26 @@ async def admin_balance_history(message: Message, bot: Bot):
         text += "Пока нет операций."
 
     await message.answer(text, parse_mode="HTML")
+
+@router.message(AdminBalance.waiting_reply)
+async def admin_balance_show(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    if not message.reply_to_message or not message.reply_to_message.from_user:
+        await message.answer("Ответьте на сообщение пользователя.")
+        return
+
+    target_id = message.reply_to_message.from_user.id
+    coins = await get_user_coins(target_id)
+    from database import get_user_name
+    name = await get_user_name(target_id)
+    link = f'<a href="tg://user?id={target_id}">{name}</a>'
+
+    text = (
+        f"Профиль: {link}\n\n"
+        f"Баланс: {coins['balance']} монет\n"
+        f"Выиграно: {coins['total_won']} | Проиграно: {coins['total_lost']}"
+    )
+
+    await message.answer(text, parse_mode="HTML")
+    await state.clear()
