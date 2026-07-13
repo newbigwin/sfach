@@ -1,4 +1,5 @@
 import aiosqlite
+from datetime import datetime, timedelta
 from config import DB_NAME
 
 
@@ -244,6 +245,15 @@ async def init_db():
                 username TEXT,
                 first_name TEXT,
                 last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS balance_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                amount INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         await db.commit()
@@ -605,26 +615,38 @@ async def claim_daily(user_id):
                 "UPDATE user_coins SET balance = ?, last_daily = CURRENT_TIMESTAMP WHERE user_id = ?",
                 (new_balance, user_id)
             )
+            await db.execute(
+                "INSERT INTO balance_history (user_id, amount, reason) VALUES (?, ?, ?)",
+                (user_id, 50, "Ежедневный бонус")
+            )
         else:
             new_balance = 150
             await db.execute(
                 "INSERT INTO user_coins (user_id, balance, last_daily) VALUES (?, ?, CURRENT_TIMESTAMP)",
                 (user_id, new_balance)
             )
+            await db.execute(
+                "INSERT INTO balance_history (user_id, amount, reason) VALUES (?, ?, ?)",
+                (user_id, 150, "Первый вход + бонус")
+            )
         await db.commit()
         return new_balance, None
 
 
-async def add_coins(user_id, amount):
+async def add_coins(user_id, amount, reason="Пополнение"):
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute(
             "INSERT INTO user_coins (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?",
             (user_id, amount, amount)
         )
+        await db.execute(
+            "INSERT INTO balance_history (user_id, amount, reason) VALUES (?, ?, ?)",
+            (user_id, amount, reason)
+        )
         await db.commit()
 
 
-async def remove_coins(user_id, amount):
+async def remove_coins(user_id, amount, reason="Списание"):
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute("SELECT balance FROM user_coins WHERE user_id = ?", (user_id,))
         row = await cursor.fetchone()
@@ -633,6 +655,10 @@ async def remove_coins(user_id, amount):
         await db.execute(
             "UPDATE user_coins SET balance = balance - ? WHERE user_id = ?",
             (amount, user_id)
+        )
+        await db.execute(
+            "INSERT INTO balance_history (user_id, amount, reason) VALUES (?, ?, ?)",
+            (user_id, -amount, reason)
         )
         await db.commit()
         return True
@@ -661,15 +687,17 @@ async def resolve_bets(match_id, winner_id):
         losers = [b for b in bets if b['bet_on_user_id'] != winner_id]
         total_loser_amount = sum(b['amount'] for b in losers)
 
+        prize_per_winner = total_loser_amount // len(winners) if winners else 0
+
         for b in winners:
-            share = int(total_loser_amount * (b['amount'] / max(1, sum(x['amount'] for x in winners)))) if winners else 0
-            await add_coins(b['user_id'], b['amount'] + share)
+            payout = b['amount'] + prize_per_winner
+            await add_coins(b['user_id'], payout)
             await db.execute(
                 "UPDATE bets SET resolved = 1, won = 1 WHERE id = ?", (b['id'],)
             )
             await db.execute(
                 "UPDATE user_coins SET total_won = total_won + ? WHERE user_id = ?",
-                (share, b['user_id'])
+                (prize_per_winner, b['user_id'])
             )
 
         for b in losers:
@@ -682,7 +710,7 @@ async def resolve_bets(match_id, winner_id):
             )
 
         await db.commit()
-        return len(winners)
+        return total_pool, len(winners), prize_per_winner
 
 
 async def get_match_bets(match_id):
@@ -693,6 +721,37 @@ async def get_match_bets(match_id):
             (match_id,)
         )
         return await cursor.fetchall()
+
+
+async def get_player_coefficient(user_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT COUNT(*) as total_bets, SUM(CASE WHEN won = 1 THEN amount ELSE 0 END) as total_won "
+            "FROM bets WHERE bet_on_user_id = ? AND resolved = 1",
+            (user_id,)
+        )
+        row = await cursor.fetchone()
+        total = row['total_bets'] or 0
+        won = row['total_won'] or 0
+
+        cursor = await db.execute(
+            "SELECT COUNT(*) as total_matches FROM matches "
+            "WHERE (player1_id = ? OR player2_id = ?) AND winner_id IS NOT NULL",
+            (user_id, user_id)
+        )
+        mrow = await cursor.fetchone()
+        total_matches = mrow['total_matches'] or 0
+
+        if total == 0:
+            return 1.05
+
+        win_rate = won / max(1, won + (total - won))
+        match_participation = total_matches
+
+        coeff = 1.05 + (win_rate * 0.3) + (match_participation * 0.01)
+        coeff = max(1.05, min(5.0, coeff))
+        return round(coeff, 2)
 
 
 async def add_quiz(chat_id, question, options, correct_index, created_by):
@@ -782,6 +841,26 @@ async def get_all_known_users():
     async with aiosqlite.connect(DB_NAME) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("SELECT user_id FROM known_users")
+        return await cursor.fetchall()
+
+
+async def get_user_name(user_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT username, first_name FROM known_users WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        if row:
+            return row['first_name'] or row['username'] or str(user_id)
+        return str(user_id)
+
+
+async def get_balance_history(user_id, limit=10):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT amount, reason, created_at FROM balance_history WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+            (user_id, limit)
+        )
         return await cursor.fetchall()
 
 

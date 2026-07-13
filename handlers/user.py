@@ -16,7 +16,9 @@ from database import (
     get_user_coins, claim_daily, place_bet, get_match_bets,
     add_quiz, get_random_quiz, place_prediction, get_leaderboard_coins,
     get_tournament_matches, get_tournament_analytics, get_match_stats,
-    get_known_users_count, ACHIEVEMENTS, aiosqlite, DB_NAME
+    get_known_users_count, get_player_coefficient,
+    check_match_exists, create_match, get_user_name, get_balance_history,
+    ACHIEVEMENTS, aiosqlite, DB_NAME
 )
 
 router = Router()
@@ -134,6 +136,10 @@ class CreateClan(StatesGroup):
     tag = State()
     description = State()
     confirm = State()
+
+
+class BetState(StatesGroup):
+    amount = State()
 
 
 @router.message(Command("clans"))
@@ -621,6 +627,12 @@ async def user_tournament_detail(callback: CallbackQuery):
     if tournament['status'] in ('registration', 'in_progress'):
         kb_buttons.append([InlineKeyboardButton(text="Турнирная сетка", callback_data=f"user_standings_{tournament_id}")])
 
+    if tournament['status'] == 'in_progress':
+        user_id = callback.from_user.id
+        is_joined = any(p['user_id'] == user_id for p in participants)
+        if is_joined:
+            kb_buttons.append([InlineKeyboardButton(text="Вызвать соперника", callback_data=f"challenge_{tournament_id}")])
+
     kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
     await callback.message.answer(text, reply_markup=kb)
     await callback.answer()
@@ -697,6 +709,103 @@ async def leave_tournament_handler(callback: CallbackQuery):
     await callback.message.edit_text(f"Вы покинули турнир \"{tournament['name']}\".")
 
 
+@router.callback_query(F.data.startswith("challenge_"))
+async def challenge_opponent(callback: CallbackQuery, state: FSMContext):
+    tournament_id = int(callback.data.split("_")[1])
+    tournament = await get_tournament(tournament_id)
+
+    if not tournament or tournament['status'] != 'in_progress':
+        await callback.answer("Турнир не активен!", show_alert=True)
+        return
+
+    user_id = callback.from_user.id
+    participants = await get_tournament_participants(tournament_id)
+    is_joined = any(p['user_id'] == user_id for p in participants)
+    if not is_joined:
+        await callback.answer("Вы не участвуете в этом турнире!", show_alert=True)
+        return
+
+    matches = await get_tournament_matches(tournament_id)
+    fought_ids = set()
+    for m in matches:
+        if m['player1_id'] == user_id and m['winner_id'] is not None:
+            fought_ids.add(m['player2_id'])
+        elif m['player2_id'] == user_id and m['winner_id'] is not None:
+            fought_ids.add(m['player1_id'])
+
+    available = [p for p in participants if p['user_id'] != user_id and p['user_id'] not in fought_ids]
+    if not available:
+        await callback.answer("Нет доступных соперников! Вы уже со всеми сыграли.", show_alert=True)
+        return
+
+    await state.update_data(challenge_tournament_id=tournament_id)
+    kb_buttons = []
+    for p in available:
+        name = p['display_name'] or p['username'] or str(p['user_id'])
+        kb_buttons.append([InlineKeyboardButton(text=name, callback_data=f"chall_{tournament_id}_{p['user_id']}")])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
+    await callback.message.answer("Выберите соперника:", reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("chall_"))
+async def confirm_challenge(callback: CallbackQuery, bot: Bot):
+    parts = callback.data.split("_")
+    tournament_id = int(parts[1])
+    opponent_id = int(parts[2])
+    user_id = callback.from_user.id
+
+    participants = await get_tournament_participants(tournament_id)
+    me = next((p for p in participants if p['user_id'] == user_id), None)
+    opp = next((p for p in participants if p['user_id'] == opponent_id), None)
+
+    if not me or not opp:
+        await callback.answer("Участник не найден!", show_alert=True)
+        return
+
+    existing = await check_match_exists(tournament_id, user_id, opponent_id)
+    if existing:
+        await callback.answer("Вы уже сражались!", show_alert=True)
+        return
+
+    matches = await get_tournament_matches(tournament_id)
+    round_num = 1
+    match_num = len([m for m in matches if m['round_num'] == round_num]) + 1
+
+    match_id = await create_match(
+        tournament_id=tournament_id,
+        player1_id=user_id,
+        player2_id=opponent_id,
+        round_num=round_num,
+        match_num=match_num
+    )
+
+    my_name = me['display_name'] or me['username'] or str(user_id)
+    opp_name = opp['display_name'] or opp['username'] or str(opponent_id)
+
+    my_link = f'<a href="tg://user?id={user_id}">{my_name}</a>'
+    opp_link = f'<a href="tg://user?id={opponent_id}">{opp_name}</a>'
+
+    chat_id = await get_chat_id()
+    if chat_id:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"{my_name} победил", callback_data=f"set_winner_{match_id}_{user_id}")],
+            [InlineKeyboardButton(text=f"{opp_name} победил", callback_data=f"set_winner_{match_id}_{opponent_id}")],
+            [InlineKeyboardButton(text=f"Ставка на {my_name}", callback_data=f"betch_{match_id}_{user_id}")],
+            [InlineKeyboardButton(text=f"Ставка на {opp_name}", callback_data=f"betch_{match_id}_{opponent_id}")],
+        ])
+
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f"Поединок (вызов)!\n\n{my_link} vs {opp_link}\n\nКто победил?",
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
+
+    await callback.answer("Поединок создан!", show_alert=True)
+
+
 @router.callback_query(F.data.startswith("user_standings_"))
 async def user_standings(callback: CallbackQuery):
     tournament_id = int(callback.data.split("_")[2])
@@ -734,11 +843,35 @@ async def cmd_daily(message: Message):
 
 @router.message(Command("balance"))
 async def cmd_balance(message: Message):
-    coins = await get_user_coins(message.from_user.id)
-    await message.answer(
+    target_id = message.from_user.id
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target_id = message.reply_to_message.from_user.id
+
+    coins = await get_user_coins(target_id)
+    name = await get_user_name(target_id)
+    link = f'<a href="tg://user?id={target_id}">{name}</a>'
+
+    text = (
+        f"Профиль: {link}\n\n"
         f"Баланс: {coins['balance']} монет\n"
         f"Выиграно: {coins['total_won']} | Проиграно: {coins['total_lost']}"
     )
+
+    kb_buttons = []
+    if target_id == message.from_user.id:
+        kb_buttons.append([InlineKeyboardButton(text="Ежедневный бонус", callback_data="daily_btn")])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons) if kb_buttons else None
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+@router.callback_query(F.data == "daily_btn")
+async def daily_button(callback: CallbackQuery):
+    balance, already = await claim_daily(callback.from_user.id)
+    if already is not None:
+        await callback.answer("Ты уже получал бонус сегодня!", show_alert=True)
+    else:
+        await callback.answer(f"Бонус получен! +50 монет. Баланс: {balance}", show_alert=True)
 
 
 @router.message(Command("coins"))
@@ -802,12 +935,15 @@ async def cmd_coins_top(message: Message):
         await message.answer("Пока нет данных.")
         return
 
+    from database import get_user_name
     text = "Топ по монетам:\n\n"
     medals = ["🥇", "🥈", "🥉"]
     for i, l in enumerate(leaders):
         medal = medals[i] if i < 3 else f"{i+1}."
-        text += f"{medal} ID {l['user_id']} - {l['balance']} монет\n"
-    await message.answer(text)
+        name = await get_user_name(l['user_id'])
+        link = f'<a href="tg://user?id={l["user_id"]}">{name}</a>'
+        text += f"{medal} {link} - {l['balance']} монет\n"
+    await message.answer(text, parse_mode="HTML")
 
 
 @router.message(Command("bet"))
@@ -840,6 +976,70 @@ async def cmd_bet(message: Message):
         )
     else:
         await message.answer("Недостаточно монет или ошибка!")
+
+
+@router.callback_query(F.data.startswith("betch_"))
+async def bet_by_button(callback: CallbackQuery, state: FSMContext):
+    parts = callback.data.split("_")
+    match_id = int(parts[1])
+    bet_on = int(parts[2])
+
+    coins = await get_user_coins(callback.from_user.id)
+    if not coins or coins['balance'] <= 0:
+        await callback.answer("Недостаточно монет!", show_alert=True)
+        return
+
+    await state.update_data(bet_match_id=match_id, bet_on=bet_on, bet_balance=coins['balance'])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="10 монет", callback_data="bset_10")],
+        [InlineKeyboardButton(text="25 монет", callback_data="bset_25")],
+        [InlineKeyboardButton(text="50 монет", callback_data="bset_50")],
+        [InlineKeyboardButton(text="100 монет", callback_data="bset_100")],
+        [InlineKeyboardButton(text="Все монеты", callback_data=f"bset_{coins['balance']}")],
+    ])
+
+    await callback.message.answer(
+        f"Ваш баланс: {coins['balance']} монет\n\nВыберите сумму ставки:",
+        reply_markup=kb
+    )
+    await state.set_state(BetState.amount)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("bset_"), BetState.amount)
+async def set_bet_amount(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    amount = int(callback.data.split("_")[1])
+    data = await state.get_data()
+
+    if amount > data.get('bet_balance', 0):
+        await callback.answer("Недостаточно монет!", show_alert=True)
+        return
+
+    ok = await place_bet(callback.from_user.id, data['bet_match_id'], data['bet_on'], amount)
+    if ok:
+        new_coins = await get_user_coins(callback.from_user.id)
+        await callback.message.answer(
+            f"Ставка принята!\n"
+            f"Поставлено: {amount} монет\n"
+            f"Баланс: {new_coins['balance']} монет"
+        )
+
+        user = callback.from_user
+        name = user.first_name or user.username or str(user.id)
+        link = f'<a href="tg://user?id={user.id}">{name}</a>'
+        from database import get_user_name
+        bet_on_name = await get_user_name(data['bet_on'])
+        await bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f'{link} сделал ставку <b>{amount}</b> монет на <b>{bet_on_name}</b>',
+            parse_mode="HTML"
+        )
+    else:
+        await callback.answer("Ошибка ставки!", show_alert=True)
+
+    await state.clear()
+    await callback.answer()
 
 
 @router.message(Command("mystats"))

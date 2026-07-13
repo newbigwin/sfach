@@ -79,6 +79,8 @@ def admin_keyboard():
         [InlineKeyboardButton(text="Викторины", callback_data="admin_quizzes")],
         [InlineKeyboardButton(text="Рассылка", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="Баланс пользователя", callback_data="admin_balance")],
+        [InlineKeyboardButton(text="История баланса", callback_data="admin_balance_history")],
         [InlineKeyboardButton(text="Утихомирить всех", callback_data="mute_menu")],
         [InlineKeyboardButton(text="Созвать всех", callback_data="summon_all")],
         [InlineKeyboardButton(text="Мануал", callback_data="admin_manual")],
@@ -1144,15 +1146,25 @@ async def confirm_event(callback: CallbackQuery, state: FSMContext, bot: Bot):
         image_file_id=data.get('image_file_id')
     )
 
+    poll_id = await add_poll(
+        question=f"Голосование: {data['title']}?",
+        options=["Буду участвовать", "Не смогу", "Посмотрю"],
+        poll_type="event",
+        created_by=callback.from_user.id,
+        chat_id=chat_id,
+        event_id=event_id
+    )
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Проголосовать", callback_data=f"vote_event_{event_id}")]
+        [InlineKeyboardButton(text="Буду участвовать", callback_data=f"vote_{poll_id}_0")],
+        [InlineKeyboardButton(text="Не смогу", callback_data=f"vote_{poll_id}_1")],
+        [InlineKeyboardButton(text="Посмотрю", callback_data=f"vote_{poll_id}_2")],
     ])
 
     text = (
         f"{data['title']}\n\n"
         f"{data['description']}\n\n"
-        f"Дата: {data['event_date']}\n\n"
-        f"Голосуйте, если хотите участвовать:"
+        f"Дата: {data['event_date']}"
     )
 
     if data.get('image_file_id'):
@@ -1188,31 +1200,7 @@ async def cancel_event(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("vote_event_"))
-async def vote_for_event(callback: CallbackQuery):
-    event_id = int(callback.data.split("_")[2])
-    event = await get_event(event_id)
 
-    if not event:
-        await callback.answer("Событие не найдено!", show_alert=True)
-        return
-
-    poll_id = await add_poll(
-        question=f"Голосование: {event['title']}?",
-        options=["Буду участвовать", "Не смогу", "Посмотрю"],
-        poll_type="event",
-        created_by=callback.from_user.id,
-        chat_id=callback.message.chat.id,
-        event_id=event_id
-    )
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Буду участвовать", callback_data=f"vote_{poll_id}_0")],
-        [InlineKeyboardButton(text="Не смогу", callback_data=f"vote_{poll_id}_1")],
-        [InlineKeyboardButton(text="Посмотрю", callback_data=f"vote_{poll_id}_2")],
-    ])
-
-    await callback.message.edit_reply_markup(reply_markup=kb)
     await callback.answer("Голос записан!")
 
 
@@ -1648,6 +1636,17 @@ async def handle_vote(callback: CallbackQuery, bot: Bot):
         reply_markup=kb
     )
     await callback.answer("Голос записан!")
+
+    user = callback.from_user
+    name = user.first_name or user.username or str(user.id)
+    link = f"<a href=\"tg://user?id={user.id}\">{name}</a>"
+    voted_option = options[option_index]
+    poll_question = poll['question']
+    await bot.send_message(
+        chat_id=ADMIN_ID,
+        text=f"{link} отдал голос за <b>{voted_option}</b> в голосовании <b>{poll_question}</b>",
+        parse_mode="HTML"
+    )
 
 
 @router.callback_query(F.data == "list_polls")
@@ -2626,6 +2625,8 @@ async def confirm_match(callback: CallbackQuery, state: FSMContext, bot: Bot):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"{p1_name} победил", callback_data=f"set_winner_{match_id}_{data['player1_id']}")],
         [InlineKeyboardButton(text=f"{p2_name} победил", callback_data=f"set_winner_{match_id}_{data['player2_id']}")],
+        [InlineKeyboardButton(text=f"Ставка на {p1_name}", callback_data=f"betch_{match_id}_{data['player1_id']}")],
+        [InlineKeyboardButton(text=f"Ставка на {p2_name}", callback_data=f"betch_{match_id}_{data['player2_id']}")],
     ])
 
     await bot.send_message(
@@ -2663,7 +2664,7 @@ async def set_winner_handler(callback: CallbackQuery, bot: Bot):
     winner_id = int(parts[3])
 
     await set_match_winner(match_id, winner_id)
-    await resolve_bets(match_id, winner_id)
+    total_pool, num_winners, share = await resolve_bets(match_id, winner_id)
 
     match = await get_match(match_id)
     participants = await get_tournament_participants(match['tournament_id'])
@@ -2671,10 +2672,13 @@ async def set_winner_handler(callback: CallbackQuery, bot: Bot):
     winner = next((p for p in participants if p['user_id'] == winner_id), None)
     winner_name = winner['display_name'] or winner['username'] or str(winner_id)
 
-    await callback.message.edit_text(
-        f'<a href="tg://user?id={winner_id}">{winner_name}</a> победил!',
-        parse_mode="HTML"
-    )
+    result_text = f'<a href="tg://user?id={winner_id}">{winner_name}</a> победил!'
+    if total_pool > 0:
+        result_text += f"\n\nБанк: {total_pool} монет"
+        if num_winners > 0:
+            result_text += f"\nКаждый победитель получает ставку + {share} монет"
+
+    await callback.message.edit_text(result_text, parse_mode="HTML")
     await callback.answer()
 
 
@@ -3165,3 +3169,68 @@ async def admin_stats_menu(callback: CallbackQuery):
     except Exception as e:
         await callback.message.answer(f"Ошибка при получении статистики: {e}")
     await callback.answer()
+
+
+@router.callback_query(F.data == "admin_balance")
+async def admin_balance_request(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+    await callback.message.answer("Ответьте на сообщение пользователя командой /balance, чтобы посмотреть его баланс.")
+    await callback.answer()
+
+
+@router.message(Command("balance"))
+async def admin_balance_check(message: Message, bot: Bot):
+    if not is_admin(message.from_user.id):
+        return
+    if not message.reply_to_message or not message.reply_to_message.from_user:
+        return
+
+    target_id = message.reply_to_message.from_user.id
+    coins = await get_user_coins(target_id)
+    from database import get_user_name
+    name = await get_user_name(target_id)
+    link = f'<a href="tg://user?id={target_id}">{name}</a>'
+
+    text = (
+        f"Профиль: {link}\n\n"
+        f"Баланс: {coins['balance']} монет\n"
+        f"Выиграно: {coins['total_won']} | Проиграно: {coins['total_lost']}"
+    )
+
+    await message.answer(text, parse_mode="HTML")
+
+
+@router.callback_query(F.data == "admin_balance_history")
+async def admin_balance_history_request(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+    await callback.message.answer("Ответьте на сообщение пользователя, чтобы посмотреть историю его баланса.")
+    await callback.answer()
+
+
+@router.message(Command("history"))
+async def admin_balance_history(message: Message, bot: Bot):
+    if not is_admin(message.from_user.id):
+        return
+    if not message.reply_to_message or not message.reply_to_message.from_user:
+        return
+
+    target_id = message.reply_to_message.from_user.id
+    from database import get_user_name, get_balance_history
+    name = await get_user_name(target_id)
+    link = f'<a href="tg://user?id={target_id}">{name}</a>'
+    history = await get_balance_history(target_id, 15)
+
+    text = f"История баланса: {link}\n\n"
+
+    if history:
+        for h in history:
+            sign = "+" if h['amount'] > 0 else ""
+            text += f"{sign}{h['amount']} — {h['reason']}\n"
+    else:
+        text += "Пока нет операций."
+
+    await message.answer(text, parse_mode="HTML")
