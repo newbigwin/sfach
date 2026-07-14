@@ -1435,3 +1435,58 @@ async def delete_tournament(tournament_id):
         await db.execute("DELETE FROM tournament_participants WHERE tournament_id = ?", (tournament_id,))
         await db.execute("DELETE FROM tournaments WHERE id = ?", (tournament_id,))
         await db.commit()
+
+
+async def get_user_recent_matches(user_id, limit=5):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """SELECT m.*, t.name as tournament_name
+               FROM matches m
+               JOIN tournaments t ON m.tournament_id = t.id
+               WHERE (m.player1_id = ? OR m.player2_id = ?) AND m.winner_id IS NOT NULL
+               ORDER BY m.id DESC LIMIT ?""",
+            (user_id, user_id, limit)
+        )
+        return await cursor.fetchall()
+
+
+async def get_pending_challenge_matches(user_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """SELECT m.*, t.name as tournament_name
+               FROM matches m
+               JOIN tournaments t ON m.tournament_id = t.id
+               WHERE (m.player1_id = ? OR m.player2_id = ?) AND m.winner_id IS NULL AND m.status != 'cancelled'
+               ORDER BY m.id DESC""",
+            (user_id, user_id)
+        )
+        return await cursor.fetchall()
+
+
+async def get_unfought_opponents(user_id, tournament_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT user_id FROM tournament_participants WHERE tournament_id = ? AND user_id != ?",
+            (tournament_id, user_id)
+        )
+        all_opponents = await cursor.fetchall()
+
+        cursor = await db.execute(
+            """SELECT player1_id, player2_id FROM matches
+               WHERE tournament_id = ? AND winner_id IS NOT NULL
+               AND (player1_id = ? OR player2_id = ?)""",
+            (tournament_id, user_id, user_id)
+        )
+        fought = await cursor.fetchall()
+
+        fought_ids = set()
+        for m in fought:
+            if m['player1_id'] == user_id:
+                fought_ids.add(m['player2_id'])
+            else:
+                fought_ids.add(m['player1_id'])
+
+        return [o for o in all_opponents if o['user_id'] not in fought_ids]

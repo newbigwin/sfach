@@ -18,7 +18,8 @@ from database import (
     get_tournament_matches, get_tournament_analytics, get_match_stats,
     get_known_users_count, get_player_coefficient,
     check_match_exists, create_match, get_user_name, get_balance_history,
-    ACHIEVEMENTS, aiosqlite, DB_NAME
+    get_user_recent_matches, get_pending_challenge_matches, get_unfought_opponents,
+    get_tournament_participants, ACHIEVEMENTS, aiosqlite, DB_NAME
 )
 
 router = Router()
@@ -101,10 +102,15 @@ async def profile_cmd(message: Message):
         for a in achievements:
             text += f"  {a['achievement_name']}\n"
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Написать", url=f"tg://user?id={user_id}")]
-    ])
+    kb_buttons = [
+        [InlineKeyboardButton(text="Последние бои", callback_data=f"recent_{user_id}")]
+    ]
 
+    pending = await get_pending_challenge_matches(user_id)
+    if pending:
+        kb_buttons.append([InlineKeyboardButton(text="Требуется поединок", callback_data=f"challenge_{pending[0]['tournament_id']}")])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
     await message.answer(text, reply_markup=kb)
 
 
@@ -1143,11 +1149,40 @@ async def user_profile(callback: CallbackQuery):
             if key in ACHIEVEMENTS:
                 text += f"  {ACHIEVEMENTS[key][0]}\n"
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Написать", url=f"tg://user?id={user_id}")]
-    ])
+    kb_buttons = [
+        [InlineKeyboardButton(text="Последние бои", callback_data=f"recent_{user_id}")]
+    ]
 
+    pending = await get_pending_challenge_matches(user_id)
+    if pending:
+        kb_buttons.append([InlineKeyboardButton(text="Требуется поединок", callback_data=f"challenge_{pending[0]['tournament_id']}")])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
     await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("recent_"))
+async def recent_matches(callback: CallbackQuery):
+    user_id = int(callback.data.split("_")[1])
+    matches = await get_user_recent_matches(user_id, 5)
+
+    name = await get_user_name(user_id)
+    link = f'<a href="tg://user?id={user_id}">{name}</a>'
+    text = f"Последние бои {link}:\n\n"
+
+    if not matches:
+        text += "Пока нет завершённых поединков."
+    else:
+        for m in matches:
+            is_p1 = m['player1_id'] == user_id
+            opponent_id = m['player2_id'] if is_p1 else m['player1_id']
+            opponent_name = await get_user_name(opponent_id)
+            result = "Победа" if m['winner_id'] == user_id else "Поражение"
+            icon = "+" if m['winner_id'] == user_id else "-"
+            text += f"{icon} vs {opponent_name} — {result} ({m['tournament_name']})\n"
+
+    await callback.message.answer(text, parse_mode="HTML")
     await callback.answer()
 
 
