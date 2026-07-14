@@ -79,7 +79,6 @@ def admin_keyboard():
         [InlineKeyboardButton(text="Викторины", callback_data="admin_quizzes")],
         [InlineKeyboardButton(text="Рассылка", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="Баланс пользователя", callback_data="admin_balance")],
         [InlineKeyboardButton(text="История баланса", callback_data="admin_balance_history")],
         [InlineKeyboardButton(text="Утихомирить всех", callback_data="mute_menu")],
         [InlineKeyboardButton(text="Созвать всех", callback_data="summon_all")],
@@ -3081,10 +3080,6 @@ class BroadcastState(StatesGroup):
     waiting_content = State()
 
 
-class AdminBalance(StatesGroup):
-    waiting_reply = State()
-
-
 @router.callback_query(F.data == "send_broadcast")
 async def send_broadcast_start(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
@@ -3175,16 +3170,6 @@ async def admin_stats_menu(callback: CallbackQuery):
     await callback.answer()
 
 
-@router.callback_query(F.data == "admin_balance")
-async def admin_balance_request(callback: CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Нет доступа!", show_alert=True)
-        return
-    await callback.message.answer("Ответьте на сообщение пользователя, чтобы посмотреть его баланс.")
-    await state.set_state(AdminBalance.waiting_reply)
-    await callback.answer()
-
-
 @router.message(Command("history"))
 async def admin_balance_history(message: Message, bot: Bot):
     if not is_admin(message.from_user.id):
@@ -3242,26 +3227,3 @@ async def admin_balance_history(message: Message, bot: Bot):
         text += "Пока нет операций."
 
     await message.answer(text, parse_mode="HTML")
-
-@router.message(AdminBalance.waiting_reply)
-async def admin_balance_show(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    if not message.reply_to_message or not message.reply_to_message.from_user:
-        await message.answer("Ответьте на сообщение пользователя.")
-        return
-
-    target_id = message.reply_to_message.from_user.id
-    coins = await get_user_coins(target_id)
-    from database import get_user_name
-    name = await get_user_name(target_id)
-    link = f'<a href="tg://user?id={target_id}">{name}</a>'
-
-    text = (
-        f"Профиль: {link}\n\n"
-        f"Баланс: {coins['balance']} монет\n"
-        f"Выиграно: {coins['total_won']} | Проиграно: {coins['total_lost']}"
-    )
-
-    await message.answer(text, parse_mode="HTML")
-    await state.clear()
