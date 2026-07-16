@@ -275,6 +275,14 @@ async def init_db():
             await db.execute("ALTER TABLE tournaments ADD COLUMN winner_id INTEGER")
         except Exception:
             pass
+        try:
+            await db.execute("ALTER TABLE quizzes ADD COLUMN is_closed INTEGER DEFAULT 0")
+        except Exception:
+            pass
+        try:
+            await db.execute("ALTER TABLE quizzes ADD COLUMN image TEXT")
+        except Exception:
+            pass
         await db.commit()
 
 
@@ -608,8 +616,12 @@ async def claim_daily(user_id):
             last = row['last_daily']
             if last:
                 last_dt = datetime.fromisoformat(last)
-                if (now - last_dt).total_seconds() < 86400:
-                    return None, row['balance']
+                elapsed = (now - last_dt).total_seconds()
+                if elapsed < 86400:
+                    remaining = 86400 - elapsed
+                    hours = int(remaining // 3600)
+                    minutes = int((remaining % 3600) // 60)
+                    return None, row['balance'], f"{hours}ч {minutes}м"
             new_balance = row['balance'] + 50
             await db.execute(
                 "UPDATE user_coins SET balance = ?, last_daily = CURRENT_TIMESTAMP WHERE user_id = ?",
@@ -630,7 +642,7 @@ async def claim_daily(user_id):
                 (user_id, 150, "Первый вход + бонус")
             )
         await db.commit()
-        return new_balance, None
+        return new_balance, None, None
 
 
 async def add_coins(user_id, amount, reason="Пополнение"):
@@ -754,12 +766,12 @@ async def get_player_coefficient(user_id):
         return round(coeff, 2)
 
 
-async def add_quiz(chat_id, question, options, correct_index, created_by):
+async def add_quiz(chat_id, question, options, correct_index, created_by, image=None):
     async with aiosqlite.connect(DB_NAME) as db:
         import json
         cursor = await db.execute(
-            "INSERT INTO quizzes (chat_id, question, options, correct_index, created_by) VALUES (?, ?, ?, ?, ?)",
-            (chat_id, question, json.dumps(options), correct_index, created_by)
+            "INSERT INTO quizzes (chat_id, question, options, correct_index, created_by, image) VALUES (?, ?, ?, ?, ?, ?)",
+            (chat_id, question, json.dumps(options), correct_index, created_by, image)
         )
         await db.commit()
         return cursor.lastrowid
@@ -769,7 +781,7 @@ async def get_random_quiz(chat_id):
     async with aiosqlite.connect(DB_NAME) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT * FROM quizzes WHERE chat_id = ? ORDER BY RANDOM() LIMIT 1",
+            "SELECT * FROM quizzes WHERE chat_id = ? AND is_closed = 0 ORDER BY RANDOM() LIMIT 1",
             (chat_id,)
         )
         row = await cursor.fetchone()
@@ -778,6 +790,12 @@ async def get_random_quiz(chat_id):
             row = dict(row)
             row['options'] = json.loads(row['options'])
         return row
+
+
+async def close_quiz(quiz_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE quizzes SET is_closed = 1 WHERE id = ?", (quiz_id,))
+        await db.commit()
 
 
 async def place_prediction(user_id, tournament_id, predicted_winner_id, amount):

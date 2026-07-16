@@ -2976,6 +2976,7 @@ async def admin_quizzes_menu(callback: CallbackQuery):
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Добавить вопрос", callback_data="add_quiz")],
+        [InlineKeyboardButton(text="Опубликовать в чат", callback_data="publish_quiz")],
         [InlineKeyboardButton(text="Назад", callback_data="admin_panel")],
     ])
     await callback.message.answer("Викторины:", reply_markup=kb)
@@ -3055,6 +3056,113 @@ async def quiz_correct(message: Message, state: FSMContext):
 
     await state.clear()
     await message.answer("Вопрос добавлен!")
+
+
+class PublishQuiz(StatesGroup):
+    question = State()
+    options = State()
+    correct = State()
+    image = State()
+
+
+@router.callback_query(F.data == "publish_quiz")
+async def publish_quiz_start(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+    await callback.message.answer("Введите вопрос:")
+    await state.set_state(PublishQuiz.question)
+    await callback.answer()
+
+
+@router.message(PublishQuiz.question)
+async def publish_quiz_question(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.update_data(question=message.text)
+    await message.answer("Введите 4 варианта ответа через запятую:")
+    await state.set_state(PublishQuiz.options)
+
+
+@router.message(PublishQuiz.options)
+async def publish_quiz_options(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    options = [o.strip() for o in message.text.split(",")]
+    if len(options) != 4:
+        await message.answer("Нужно ровно 4 варианта через запятую:")
+        return
+    await state.update_data(options=options)
+    await message.answer("Номер правильного ответа (1-4):")
+    await state.set_state(PublishQuiz.correct)
+
+
+@router.message(PublishQuiz.correct)
+async def publish_quiz_correct(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    try:
+        correct = int(message.text) - 1
+        if correct < 0 or correct > 3:
+            await message.answer("Введите число от 1 до 4:")
+            return
+    except ValueError:
+        await message.answer("Введите число:")
+        return
+    await state.update_data(correct=correct)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Без картинки", callback_data="pqz_no_image")]
+    ])
+    await message.answer("Прикрепите изображение или нажмите 'Без картинки':", reply_markup=kb)
+    await state.set_state(PublishQuiz.image)
+
+
+@router.callback_query(F.data == "pqz_no_image", PublishQuiz.image)
+async def publish_quiz_no_image(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        return
+    await _publish_quiz_final(callback.message, state, bot, None)
+
+
+@router.message(PublishQuiz.image, F.photo)
+async def publish_quiz_with_image(message: Message, state: FSMContext, bot: Bot):
+    if not is_admin(message.from_user.id):
+        return
+    photo = message.photo[-1]
+    await _publish_quiz_final(message, state, bot, photo.file_id)
+
+
+async def _publish_quiz_final(msg, state, bot, image_file_id):
+    data = await state.get_data()
+    chat_id = await get_chat_id()
+    if not chat_id:
+        await msg.answer("Сначала настройте чат командой /setchat!")
+        await state.clear()
+        return
+
+    quiz_id = await add_quiz(
+        chat_id=chat_id,
+        question=data['question'],
+        options=data['options'],
+        correct_index=data['correct'],
+        created_by=msg.from_user.id if hasattr(msg, 'from_user') else 0,
+        image=image_file_id
+    )
+
+    kb_buttons = []
+    for i, opt in enumerate(data['options']):
+        kb_buttons.append([InlineKeyboardButton(text=opt, callback_data=f"qz{quiz_id}x{i}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
+
+    text = f"Викторина:\n\n{data['question']}"
+
+    if image_file_id:
+        await bot.send_photo(chat_id=chat_id, photo=image_file_id, caption=text, reply_markup=kb)
+    else:
+        await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb)
+
+    await state.clear()
+    await msg.answer("Опубликовано!")
 
 
 @router.callback_query(F.data == "admin_broadcast")

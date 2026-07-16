@@ -833,12 +833,12 @@ async def user_standings(callback: CallbackQuery):
 
 @router.message(Command("daily"))
 async def cmd_daily(message: Message):
-    balance, already = await claim_daily(message.from_user.id)
+    balance, already, time_left = await claim_daily(message.from_user.id)
     if already is not None:
         await message.answer(
             f"Ты уже получал бонус сегодня!\n"
             f"Баланс: {already} монет\n"
-            f"Приходи завтра за +50"
+            f"Доступно через: {time_left}"
         )
     else:
         await message.answer(
@@ -888,7 +888,6 @@ async def cmd_coins(message: Message):
         f"Команды:\n"
         f"/daily - бонус +50\n"
         f"/balance - баланс\n"
-        f"/quiz - викторина (+20 монет)\n"
         f"/coins_top - рейтинг"
     )
 
@@ -911,27 +910,42 @@ async def cmd_quiz(message: Message):
 
 
 @router.callback_query(F.data.startswith("qz"))
-async def quiz_answer(callback: CallbackQuery):
+async def quiz_answer(callback: CallbackQuery, bot: Bot):
     parts = callback.data.split("x")
     quiz_id = int(parts[0][2:])
     chosen = int(parts[1])
 
-    from database import aiosqlite, DB_NAME
+    from database import aiosqlite, DB_NAME, close_quiz
     async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute("SELECT correct_index FROM quizzes WHERE id = ?", (quiz_id,))
+        cursor = await db.execute("SELECT correct_index, is_closed FROM quizzes WHERE id = ?", (quiz_id,))
         row = await cursor.fetchone()
         if not row:
             await callback.answer("Вопрос не найден")
             return
-        correct = row[0]
+        correct, is_closed = row
+
+    if is_closed:
+        await callback.answer("Этот вопрос уже закрыт!", show_alert=True)
+        return
 
     if chosen == correct:
-        from database import add_coins
-        await add_coins(callback.from_user.id, 20)
+        from database import add_coins, get_user_name
+        await add_coins(callback.from_user.id, 20, "Викторина")
+        await close_quiz(quiz_id)
         await callback.message.edit_text("Правильно! +20 монет")
+        await callback.answer()
+
+        user = callback.from_user
+        name = user.first_name or user.username or str(user.id)
+        link = f'<a href="tg://user?id={user.id}">{name}</a>'
+        await bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f'{link} правильно ответил на вопрос викторины и получил +20 монет!',
+            parse_mode="HTML"
+        )
     else:
         await callback.message.edit_text("Неверно! Попробуй следующий раз.")
-    await callback.answer()
+        await callback.answer()
 
 
 @router.message(Command("coins_top"))
