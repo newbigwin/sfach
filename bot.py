@@ -12,7 +12,7 @@ from config import BOT_TOKEN
 from database import (
     init_db, get_pending_reminders, mark_reminder_sent,
     get_all_active_recurring_events, mark_recurring_event_created,
-    track_known_user
+    track_known_user, get_due_posts, mark_post_published
 )
 from handlers import admin, user
 
@@ -93,21 +93,53 @@ async def check_recurring_events(bot: Bot):
         await asyncio.sleep(60)
 
 
+async def check_scheduled_posts(bot: Bot):
+    while True:
+        try:
+            posts = await get_due_posts()
+            for post in posts:
+                try:
+                    if post['image']:
+                        await bot.send_photo(
+                            chat_id=post['chat_id'],
+                            photo=post['image'],
+                            caption=post['text']
+                        )
+                    else:
+                        await bot.send_message(
+                            chat_id=post['chat_id'],
+                            text=post['text']
+                        )
+                    await mark_post_published(post['id'])
+                    logger.info(f"Scheduled post #{post['id']} published")
+                except Exception as e:
+                    logger.error(f"Failed to publish scheduled post #{post['id']}: {e}")
+        except Exception as e:
+            logger.error(f"Scheduled posts check error: {e}")
+        await asyncio.sleep(60)
+
+
+scheduled_task = None
+
+
 async def on_startup(bot: Bot):
-    global reminder_task, recurring_task
+    global reminder_task, recurring_task, scheduled_task
     await bot.set_webhook(f"{BASE_WEBHOOK_URL}{WEBHOOK_PATH}")
     await init_db()
     reminder_task = asyncio.create_task(check_reminders(bot))
     recurring_task = asyncio.create_task(check_recurring_events(bot))
+    scheduled_task = asyncio.create_task(check_scheduled_posts(bot))
     logger.info(f"Бот запущен! Webhook: {BASE_WEBHOOK_URL}{WEBHOOK_PATH}")
 
 
 async def on_shutdown(bot: Bot):
-    global reminder_task, recurring_task
+    global reminder_task, recurring_task, scheduled_task
     if reminder_task:
         reminder_task.cancel()
     if recurring_task:
         recurring_task.cancel()
+    if scheduled_task:
+        scheduled_task.cancel()
     await bot.delete_webhook()
     logger.info("Бот остановлен.")
 

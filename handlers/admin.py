@@ -78,6 +78,7 @@ def admin_keyboard():
         [InlineKeyboardButton(text="Напоминания", callback_data="admin_reminders")],
         [InlineKeyboardButton(text="Викторины", callback_data="admin_quizzes")],
         [InlineKeyboardButton(text="Рассылка", callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text="Запланированные посты", callback_data="admin_scheduled")],
         [InlineKeyboardButton(text="Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="История баланса", callback_data="admin_balance_history")],
         [InlineKeyboardButton(text="Утихомирить всех", callback_data="mute_menu")],
@@ -3335,3 +3336,305 @@ async def admin_balance_history(message: Message, bot: Bot):
         text += "Пока нет операций."
 
     await message.answer(text, parse_mode="HTML")
+RECURSION_OPTIONS = {
+    'daily': 'Каждый день',
+    'weekly': 'Раз в неделю',
+    'every_3': 'Раз в 3 дня',
+    'every_7': 'Раз в 7 дней',
+    'once': 'Один раз',
+}
+
+DAYS_OF_WEEK = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+
+
+class ScheduledPost(StatesGroup):
+    text = State()
+    image = State()
+    recurrence = State()
+    time = State()
+    day_of_week = State()
+
+
+@router.callback_query(F.data == "admin_scheduled")
+async def admin_scheduled_menu(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    chat_id = await get_chat_id()
+    posts = await get_scheduled_posts(chat_id) if chat_id else []
+
+    kb_buttons = [[InlineKeyboardButton(text="Новый пост", callback_data="new_scheduled")]]
+
+    if posts:
+        for p in posts:
+            rec = RECURSION_OPTIONS.get(p["recurrence"], p["recurrence"])
+            title = p["text"][:30] + "..." if len(p["text"]) > 30 else p["text"]
+            kb_buttons.append([
+                InlineKeyboardButton(
+                    text=f"{title} ({rec}, {p['time_of_day']})",
+                    callback_data=f"sp_{p['id']}"
+                )
+            ])
+
+    kb_buttons.append([InlineKeyboardButton(text="Назад", callback_data="admin_panel")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
+    await callback.message.answer("Запланированные посты:", reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "new_scheduled")
+async def new_scheduled_start(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+    await callback.message.answer("Введите текст поста:")
+    await state.set_state(ScheduledPost.text)
+    await callback.answer()
+
+
+@router.message(ScheduledPost.text)
+async def scheduled_text(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    if 'edit_post_id' in data:
+        await update_scheduled_post(data['edit_post_id'], text=message.text)
+        await state.clear()
+        await message.answer("Текст обновлён!")
+        return
+    await state.update_data(text=message.text)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Без картинки", callback_data="sp_no_image")]
+    ])
+    await message.answer("Прикрепите изображение или нажмите 'Без картинки':", reply_markup=kb)
+    await state.set_state(ScheduledPost.image)
+
+
+@router.callback_query(F.data == "sp_no_image", ScheduledPost.image)
+async def scheduled_no_image(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    await state.update_data(image=None)
+    kb_buttons = []
+    for key, val in RECURSION_OPTIONS.items():
+        kb_buttons.append([InlineKeyboardButton(text=val, callback_data=f"sp_rec_{key}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
+    await callback.message.answer("Выберите периодичность:", reply_markup=kb)
+    await state.set_state(ScheduledPost.recurrence)
+    await callback.answer()
+
+
+@router.message(ScheduledPost.image, F.photo)
+async def scheduled_with_image(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    photo = message.photo[-1]
+    await state.update_data(image=photo.file_id)
+    kb_buttons = []
+    for key, val in RECURSION_OPTIONS.items():
+        kb_buttons.append([InlineKeyboardButton(text=val, callback_data=f"sp_rec_{key}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
+    await message.answer("Выберите периодичность:", reply_markup=kb)
+    await state.set_state(ScheduledPost.recurrence)
+
+
+@router.callback_query(F.data.startswith("sp_rec_"), ScheduledPost.recurrence)
+async def scheduled_recurrence(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    rec = callback.data[7:]
+    await state.update_data(recurrence=rec)
+    if rec == "weekly":
+        kb_buttons = []
+        for i, day in enumerate(DAYS_OF_WEEK):
+            kb_buttons.append([InlineKeyboardButton(text=day, callback_data=f"sp_day_{i}")])
+        kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
+        await callback.message.answer("Выберите день недели:", reply_markup=kb)
+        await state.set_state(ScheduledPost.day_of_week)
+    else:
+        await callback.message.answer("Введите время публикации (ЧЧ:ММ, например 10:00):")
+        await state.set_state(ScheduledPost.time)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("sp_day_"), ScheduledPost.day_of_week)
+async def scheduled_day(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    day = int(callback.data[7:])
+    await state.update_data(day_of_week=day)
+    await callback.message.answer("Введите время публикации (ЧЧ:ММ, например 10:00):")
+    await state.set_state(ScheduledPost.time)
+    await callback.answer()
+
+
+@router.message(ScheduledPost.time)
+async def scheduled_time(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    time_str = message.text.strip()
+    parts = time_str.split(":")
+    if len(parts) != 2 or not all(p.isdigit() for p in parts):
+        await message.answer("Неверный формат. Используйте ЧЧ:ММ (например 10:00):")
+        return
+    h, m = int(parts[0]), int(parts[1])
+    if h < 0 or h > 23 or m < 0 or m > 59:
+        await message.answer("Неверное время. Часы 0-23, минуты 0-59:")
+        return
+
+    data = await state.get_data()
+    if 'edit_post_id' in data:
+        await update_scheduled_post(data['edit_post_id'], time_of_day=time_str)
+        await state.clear()
+        await message.answer("Время обновлено!")
+        return
+
+    await state.update_data(time=time_str)
+    chat_id = await get_chat_id()
+    if not chat_id:
+        await message.answer("Сначала настройте чат командой /setchat!")
+        await state.clear()
+        return
+
+    post_id = await add_scheduled_post(
+        chat_id=chat_id,
+        text=data["text"],
+        image=data.get("image"),
+        recurrence=data["recurrence"],
+        time_of_day=time_str,
+        day_of_week=data.get("day_of_week", 0),
+        created_by=message.from_user.id
+    )
+
+    rec_name = RECURSION_OPTIONS.get(data["recurrence"], data["recurrence"])
+    await state.clear()
+    await message.answer(
+        f"Пост #{post_id} запланирован!\n\n"
+        f"Периодичность: {rec_name}\n"
+        f"Время: {time_str}\n\n"
+        f"Опубликуется автоматически."
+    )
+
+
+@router.callback_query(F.data.startswith("sp_"))
+async def scheduled_post_detail(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+
+    post_id = int(callback.data[3:])
+    post = await get_scheduled_post(post_id)
+    if not post:
+        await callback.answer("Пост не найден!", show_alert=True)
+        return
+
+    rec_name = RECURSION_OPTIONS.get(post["recurrence"], post["recurrence"])
+    status = "Активен" if post["is_active"] else "Пауза"
+    last = post["last_published"] or "Никогда"
+
+    text = (
+        f"Пост #{post_id}\n\n"
+        f"Текст: {post['text']}\n\n"
+        f"Периодичность: {rec_name}\n"
+        f"Время: {post['time_of_day']}\n"
+        f"Статус: {status}\n"
+        f"Последняя публикация: {last}"
+    )
+
+    if post["recurrence"] == "weekly":
+        text += f"\nДень недели: {DAYS_OF_WEEK[post['day_of_week']]}"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Редактировать текст", callback_data=f"spe_{post_id}_text")],
+        [InlineKeyboardButton(text="Редактировать время", callback_data=f"spe_{post_id}_time")],
+        [InlineKeyboardButton(text="Редактировать периодичность", callback_data=f"spe_{post_id}_rec")],
+        [InlineKeyboardButton(
+            text="Пауза" if post["is_active"] else "Возобновить",
+            callback_data=f"sptoggle_{post_id}"
+        )],
+        [InlineKeyboardButton(text="Удалить", callback_data=f"spd_{post_id}")],
+        [InlineKeyboardButton(text="Назад", callback_data="admin_scheduled")],
+    ])
+
+    await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("spe_"))
+async def scheduled_edit(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    parts = callback.data.split("_")
+    post_id = int(parts[1])
+    field = parts[2]
+    await state.update_data(edit_post_id=post_id)
+
+    if field == "text":
+        await callback.message.answer("Введите новый текст поста:")
+        await state.set_state(ScheduledPost.text)
+    elif field == "time":
+        await callback.message.answer("Введите новое время (ЧЧ:ММ):")
+        await state.set_state(ScheduledPost.time)
+    elif field == "rec":
+        kb_buttons = []
+        for key, val in RECURSION_OPTIONS.items():
+            kb_buttons.append([InlineKeyboardButton(text=val, callback_data=f"sprec_{post_id}_{key}")])
+        kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
+        await callback.message.answer("Выберите новую периодичность:", reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("sptoggle_"))
+async def scheduled_toggle(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    post_id = int(callback.data[9:])
+    post = await get_scheduled_post(post_id)
+    if not post:
+        await callback.answer("Не найдено!", show_alert=True)
+        return
+    new_status = 0 if post["is_active"] else 1
+    await update_scheduled_post(post_id, is_active=new_status)
+    status = "Активен" if new_status else "Пауза"
+    await callback.answer(f"Статус: {status}", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("spd_"))
+async def scheduled_delete(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    post_id = int(callback.data[4:])
+    await delete_scheduled_post(post_id)
+    await callback.answer("Удалено!", show_alert=True)
+    await callback.message.edit_text(f"Пост #{post_id} удалён.")
+
+
+@router.callback_query(F.data.startswith("sprec_"))
+async def scheduled_change_rec(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    parts = callback.data.split("_")
+    post_id = int(parts[1])
+    new_rec = parts[2]
+    await update_scheduled_post(post_id, recurrence=new_rec)
+    if new_rec == "weekly":
+        kb_buttons = []
+        for i, day in enumerate(DAYS_OF_WEEK):
+            kb_buttons.append([InlineKeyboardButton(text=day, callback_data=f"spday_{post_id}_{i}")])
+        kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
+        await callback.message.answer("Выберите день недели:", reply_markup=kb)
+    else:
+        await callback.answer(f"Периодичность обновлена: {RECURSION_OPTIONS.get(new_rec, new_rec)}", show_alert=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("spday_"))
+async def scheduled_change_day(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    parts = callback.data.split("_")
+    post_id = int(parts[1])
+    day = int(parts[2])
+    await update_scheduled_post(post_id, day_of_week=day)
+    await callback.answer(f"День недели: {DAYS_OF_WEEK[day]}", show_alert=True)

@@ -256,6 +256,21 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS scheduled_posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                image TEXT,
+                recurrence TEXT NOT NULL DEFAULT 'daily',
+                time_of_day TEXT NOT NULL DEFAULT '10:00',
+                day_of_week INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                created_by INTEGER,
+                last_published TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         await db.commit()
 
         # Migration: add new columns to existing tables
@@ -1508,3 +1523,107 @@ async def get_unfought_opponents(user_id, tournament_id):
                 fought_ids.add(m['player1_id'])
 
         return [o for o in all_opponents if o['user_id'] not in fought_ids]
+
+
+async def add_scheduled_post(chat_id, text, image, recurrence, time_of_day, day_of_week, created_by):
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            """INSERT INTO scheduled_posts
+               (chat_id, text, image, recurrence, time_of_day, day_of_week, created_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (chat_id, text, image, recurrence, time_of_day, day_of_week, created_by)
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_scheduled_posts(chat_id=None):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        if chat_id:
+            cursor = await db.execute(
+                "SELECT * FROM scheduled_posts WHERE chat_id = ? AND is_active = 1 ORDER BY id",
+                (chat_id,)
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT * FROM scheduled_posts WHERE is_active = 1 ORDER BY id"
+            )
+        return await cursor.fetchall()
+
+
+async def get_scheduled_post(post_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM scheduled_posts WHERE id = ?", (post_id,))
+        return await cursor.fetchone()
+
+
+async def update_scheduled_post(post_id, **kwargs):
+    async with aiosqlite.connect(DB_NAME) as db:
+        sets = []
+        vals = []
+        for k, v in kwargs.items():
+            if k in ('text', 'image', 'recurrence', 'time_of_day', 'day_of_week', 'is_active', 'last_published'):
+                sets.append(f"{k} = ?")
+                vals.append(v)
+        if sets:
+            vals.append(post_id)
+            await db.execute(f"UPDATE scheduled_posts SET {', '.join(sets)} WHERE id = ?", vals)
+            await db.commit()
+        return True
+
+
+async def delete_scheduled_post(post_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("DELETE FROM scheduled_posts WHERE id = ?", (post_id,))
+        await db.commit()
+
+
+async def get_due_posts():
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        now = datetime.now()
+        today_str = now.strftime("%Y-%m-%d")
+        current_time = now.strftime("%H:%M")
+
+        cursor = await db.execute(
+            """SELECT * FROM scheduled_posts
+               WHERE is_active = 1 AND time_of_day <= ?
+               AND (last_published IS NULL OR last_published < ?)""",
+            (current_time, today_str)
+        )
+        posts = await cursor.fetchall()
+        due = []
+        for p in posts:
+            should_publish = False
+            if p['recurrence'] == 'daily':
+                should_publish = True
+            elif p['recurrence'] == 'weekly':
+                should_publish = (now.weekday() == p['day_of_week'])
+            elif p['recurrence'] == 'once':
+                if p['last_published'] is None:
+                    should_publish = True
+            elif p['recurrence'].startswith('every_'):
+                try:
+                    days = int(p['recurrence'].split('_')[1])
+                    if p['last_published']:
+                        last_dt = datetime.fromisoformat(p['last_published'])
+                        if (now - last_dt).days >= days:
+                            should_publish = True
+                    else:
+                        should_publish = True
+                except (ValueError, IndexError):
+                    pass
+            if should_publish:
+                due.append(p)
+        return due
+
+
+async def mark_post_published(post_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "UPDATE scheduled_posts SET last_published = CURRENT_TIMESTAMP WHERE id = ?",
+            (post_id,)
+        )
+        await db.commit()
