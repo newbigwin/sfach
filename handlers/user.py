@@ -106,9 +106,10 @@ async def profile_cmd(message: Message):
         [InlineKeyboardButton(text="Последние бои", callback_data=f"recent_{user_id}")]
     ]
 
-    pending = await get_pending_challenge_matches(user_id)
-    if pending:
-        kb_buttons.append([InlineKeyboardButton(text="Требуется поединок", callback_data=f"challenge_{pending[0]['tournament_id']}")])
+    if user_id == message.from_user.id:
+        pending = await get_pending_challenge_matches(user_id)
+        if pending:
+            kb_buttons.append([InlineKeyboardButton(text="Нужен поединок", callback_data=f"challenge_{pending[0]['tournament_id']}")])
 
     kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
     await message.answer(text, reply_markup=kb)
@@ -809,6 +810,14 @@ async def confirm_challenge(callback: CallbackQuery, bot: Bot):
             parse_mode="HTML"
         )
 
+    tournament = await get_tournament(tournament_id)
+    tournament_name = tournament['name'] if tournament else "Неизвестный турнир"
+    await bot.send_message(
+        chat_id=ADMIN_ID,
+        text=f"Вызов на поединок!\n\n{my_link} vs {opp_link}\n\nТурнир: {tournament_name}",
+        parse_mode="HTML"
+    )
+
     await callback.answer("Поединок создан!", show_alert=True)
 
 
@@ -873,9 +882,9 @@ async def cmd_balance(message: Message):
 
 @router.callback_query(F.data == "daily_btn")
 async def daily_button(callback: CallbackQuery):
-    balance, already = await claim_daily(callback.from_user.id)
+    balance, already, time_left = await claim_daily(callback.from_user.id)
     if already is not None:
-        await callback.answer("Ты уже получал бонус сегодня!", show_alert=True)
+        await callback.answer(f"Уже получал сегодня! Доступно через: {time_left}", show_alert=True)
     else:
         await callback.answer(f"Бонус получен! +50 монет. Баланс: {balance}", show_alert=True)
 
@@ -1067,7 +1076,7 @@ async def cmd_mystats(message: Message):
     user_id = message.from_user.id
     stats = await get_player_stats(user_id)
     coins = await get_user_coins(user_id)
-    elo_player = await get_or_create_player(user_id)
+    elo_player = await get_or_create_player(user_id, message.chat.id)
 
     if not stats:
         await message.answer("Пока нет статистики. Сыграй хотя бы один турнир!")
