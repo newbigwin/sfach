@@ -21,7 +21,7 @@ from database import (
     get_known_users_count, get_player_coefficient,
     check_match_exists, create_match, get_user_name, get_balance_history,
     get_user_recent_matches, get_pending_challenge_matches, get_unfought_opponents,
-    get_tournament_participants, ACHIEVEMENTS, aiosqlite, DB_NAME
+    get_tournaments_with_unfought, get_tournament_participants, ACHIEVEMENTS, aiosqlite, DB_NAME
 )
 
 router = Router()
@@ -110,9 +110,9 @@ async def profile_cmd(message: Message):
     ]
 
     if user_id == message.from_user.id:
-        pending = await get_pending_challenge_matches(user_id)
-        if pending:
-            kb_buttons.append([InlineKeyboardButton(text="Нужен поединок", callback_data=f"challenge_{pending[0]['tournament_id']}")])
+        active_tournaments = await get_tournaments_with_unfought(user_id)
+        if active_tournaments:
+            kb_buttons.append([InlineKeyboardButton(text="Нужен поединок", callback_data=f"challenge_{active_tournaments[0]['id']}")])
 
     chat_id = await get_chat_id()
     if chat_id:
@@ -1290,9 +1290,10 @@ async def user_profile(callback: CallbackQuery):
         [InlineKeyboardButton(text="Последние бои", callback_data=f"recent_{user_id}")]
     ]
 
-    pending = await get_pending_challenge_matches(user_id)
-    if pending:
-        kb_buttons.append([InlineKeyboardButton(text="Требуется поединок", callback_data=f"challenge_{pending[0]['tournament_id']}")])
+    if user_id == callback.from_user.id:
+        active_tournaments = await get_tournaments_with_unfought(user_id)
+        if active_tournaments:
+            kb_buttons.append([InlineKeyboardButton(text="Нужен поединок", callback_data=f"challenge_{active_tournaments[0]['id']}")])
 
     kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
     await callback.message.answer(text, reply_markup=kb)

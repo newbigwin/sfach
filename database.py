@@ -1570,6 +1570,25 @@ async def get_unfought_opponents(user_id, tournament_id):
         return [o for o in all_opponents if o['user_id'] not in fought_ids]
 
 
+async def get_tournaments_with_unfought(user_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """SELECT t.id, t.name FROM tournaments t
+               JOIN tournament_participants tp ON tp.tournament_id = t.id
+               WHERE tp.user_id = ? AND t.status = 'in_progress'""",
+            (user_id,)
+        )
+        tournaments = await cursor.fetchall()
+
+        result = []
+        for t in tournaments:
+            opponents = await get_unfought_opponents(user_id, t['id'])
+            if opponents:
+                result.append(t)
+        return result
+
+
 async def add_scheduled_post(chat_id, text, image, recurrence, time_of_day, day_of_week, created_by):
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute(
