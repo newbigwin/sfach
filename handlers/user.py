@@ -114,6 +114,12 @@ async def profile_cmd(message: Message):
         if pending:
             kb_buttons.append([InlineKeyboardButton(text="Нужен поединок", callback_data=f"challenge_{pending[0]['tournament_id']}")])
 
+    chat_id = await get_chat_id()
+    if chat_id:
+        clan = await get_user_clan(user_id, chat_id)
+        if clan:
+            kb_buttons.append([InlineKeyboardButton(text="Клан", callback_data=f"clan_info_{clan['id']}")])
+
     kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
     await message.answer(text, reply_markup=kb)
 
@@ -241,6 +247,32 @@ async def my_clan_callback(callback: CallbackQuery):
         [InlineKeyboardButton(text="Покинуть клан", callback_data="leave_clan_confirm")]
     ])
     await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("clan_info_"))
+async def clan_info_callback(callback: CallbackQuery):
+    clan_id = int(callback.data.split("_")[2])
+    clan = await get_clan(clan_id)
+    if not clan:
+        await callback.answer("Клан не найден!", show_alert=True)
+        return
+
+    members = await get_clan_members(clan_id)
+    count = await get_clan_member_count(clan_id)
+
+    text = (
+        f"Клан: [{clan['tag']}] {clan['name']}\n"
+        f"Описание: {clan['description']}\n"
+        f"ELO: {clan['elo']}\n"
+        f"Победы: {clan['wins']} | Поражения: {clan['losses']}\n"
+        f"Участники: {count}\n\n"
+        f"Участники:\n"
+    )
+    for m in members:
+        text += f"  {m['display_name'] or m['username'] or str(m['user_id'])} ({m['role']})\n"
+
+    await callback.message.answer(text)
     await callback.answer()
 
 
@@ -1089,7 +1121,12 @@ async def bet_by_button(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Недостаточно монет!", show_alert=True)
         return
 
-    await state.update_data(bet_match_id=match_id, bet_on=bet_on, bet_balance=coins['balance'])
+    await state.update_data(
+        bet_match_id=match_id,
+        bet_on=bet_on,
+        bet_balance=coins['balance'],
+        bet_user_id=callback.from_user.id
+    )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="10 монет", callback_data="bset_10")],
@@ -1109,8 +1146,13 @@ async def bet_by_button(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("bset_"), BetState.amount)
 async def set_bet_amount(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    amount = int(callback.data.split("_")[1])
     data = await state.get_data()
+
+    if callback.from_user.id != data.get('bet_user_id'):
+        await callback.answer("Это не ваша ставка!", show_alert=True)
+        return
+
+    amount = int(callback.data.split("_")[1])
 
     if amount > data.get('bet_balance', 0):
         await callback.answer("Недостаточно монет!", show_alert=True)
@@ -1119,6 +1161,7 @@ async def set_bet_amount(callback: CallbackQuery, state: FSMContext, bot: Bot):
     ok = await place_bet(callback.from_user.id, data['bet_match_id'], data['bet_on'], amount)
     if ok:
         new_coins = await get_user_coins(callback.from_user.id)
+        await callback.message.delete()
         await callback.message.answer(
             f"Ставка принята!\n"
             f"Поставлено: {amount} монет\n"
