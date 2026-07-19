@@ -13,6 +13,8 @@ from database import (
     get_or_create_player, get_leaderboard, get_player_stats,
     create_clan, get_clan, get_user_clan, join_clan, leave_clan,
     get_clan_members, get_clans, get_clan_member_count,
+    grant_clan_creation, has_clan_creation_permission, revoke_clan_creation,
+    delete_clan, get_clan_leader,
     get_user_coins, claim_daily, place_bet, get_match_bets,
     add_quiz, get_random_quiz, place_prediction, get_leaderboard_coins,
     get_tournament_matches, get_tournament_analytics, get_match_stats,
@@ -57,6 +59,7 @@ async def help_cmd(message: Message):
         "/leaderboard - Таблица лидеров\n"
         "/clan - Мой клан\n"
         "/clans - Все кланы\n"
+        "/new_clan - Создать клан (нужно разрешение)\n"
         "/clan_join <ID> - Вступить в клан\n"
         "/clan_leave - Покинуть клан\n"
         "/help - Помощь"
@@ -316,6 +319,7 @@ async def confirm_clan(callback: CallbackQuery, state: FSMContext):
     )
 
     if clan_id:
+        await revoke_clan_creation(user_id)
         await state.clear()
         await callback.message.answer(f"Клан [{data['tag']}] {data['name']} создан!")
     else:
@@ -334,7 +338,8 @@ async def cancel_clan(callback: CallbackQuery, state: FSMContext):
 @router.message(Command("clan_join"))
 async def clan_join_cmd(message: Message):
     configured = await get_chat_id()
-    if message.chat.type != "private" and str(message.chat.id) != str(configured):
+    if not configured:
+        await message.answer("Чат не настроен!")
         return
 
     args = message.text.split()
@@ -349,7 +354,7 @@ async def clan_join_cmd(message: Message):
         return
 
     user_id = message.from_user.id
-    chat_id = message.chat.id
+    chat_id = configured
 
     existing = await get_user_clan(user_id, chat_id)
     if existing:
@@ -361,7 +366,7 @@ async def clan_join_cmd(message: Message):
         await message.answer("Клан не найден.")
         return
 
-    if clan['chat_id'] != chat_id:
+    if str(clan['chat_id']) != str(chat_id):
         await message.answer("Этот клан не в этом чате.")
         return
 
@@ -395,6 +400,72 @@ async def clan_leave_cmd(message: Message):
         await message.answer("Вы покинули клан.")
     else:
         await message.answer("Не удалось покинуть клан.")
+
+
+@router.message(Command("new_clan"))
+async def new_clan_cmd(message: Message, state: FSMContext):
+    configured = await get_chat_id()
+    if not configured:
+        await message.answer("Чат не настроен!")
+        return
+
+    user_id = message.from_user.id
+    chat_id = configured
+
+    existing = await get_user_clan(user_id, chat_id)
+    if existing:
+        await message.answer("Вы уже в клане! Сначала покиньте его.")
+        return
+
+    has_perm = await has_clan_creation_permission(user_id)
+    if not has_perm:
+        await message.answer("У вас нет разрешения на создание клана. Попросите администратора выдать разрешение.")
+        return
+
+    await message.answer("Введите название клана:")
+    await state.set_state(CreateClan.name)
+
+
+@router.message(Command("grant_clan"))
+async def grant_clan_cmd(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    if not message.reply_to_message or not message.reply_to_message.from_user:
+        await message.answer("Ответьте на сообщение пользователя, чтобы выдать разрешение на создание клана.")
+        return
+
+    target_id = message.reply_to_message.from_user.id
+    await grant_clan_creation(target_id, message.from_user.id)
+
+    from database import get_user_name
+    name = await get_user_name(target_id)
+    link = f'<a href="tg://user?id={target_id}">{name}</a>'
+    await message.answer(f"Разрешение на создание клана выдано: {link}", parse_mode="HTML")
+
+
+@router.message(Command("clan_delete"))
+async def clan_delete_cmd(message: Message):
+    configured = await get_chat_id()
+    if not configured:
+        await message.answer("Чат не настроен!")
+        return
+
+    user_id = message.from_user.id
+    chat_id = configured
+
+    clan = await get_user_clan(user_id, chat_id)
+    if not clan:
+        await message.answer("Вы не в клане.")
+        return
+
+    is_leader = clan['leader_id'] == user_id
+    if not is_leader and not is_admin(user_id):
+        await message.answer("Только лидер клана или администратор может удалить клан.")
+        return
+
+    await delete_clan(clan['id'])
+    await message.answer(f"Клан [{clan['tag']}] {clan['name']} удалён.")
 
 
 @router.message(Command("events"))

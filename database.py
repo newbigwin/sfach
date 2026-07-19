@@ -271,6 +271,13 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS clan_creation_permissions (
+                user_id INTEGER PRIMARY KEY,
+                granted_by INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         await db.commit()
 
         # Migration: add new columns to existing tables
@@ -1075,6 +1082,44 @@ async def update_clan_stats(clan_id, won):
                 (clan_id,)
             )
         await db.commit()
+
+
+async def grant_clan_creation(user_id, granted_by):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO clan_creation_permissions (user_id, granted_by) VALUES (?, ?)",
+            (user_id, granted_by)
+        )
+        await db.commit()
+
+
+async def has_clan_creation_permission(user_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            "SELECT 1 FROM clan_creation_permissions WHERE user_id = ?", (user_id,)
+        )
+        return await cursor.fetchone() is not None
+
+
+async def revoke_clan_creation(user_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("DELETE FROM clan_creation_permissions WHERE user_id = ?", (user_id,))
+        await db.commit()
+
+
+async def delete_clan(clan_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("DELETE FROM clan_members WHERE clan_id = ?", (clan_id,))
+        await db.execute("DELETE FROM clan_creation_permissions WHERE user_id IN (SELECT leader_id FROM clans WHERE id = ?)", (clan_id,))
+        await db.execute("DELETE FROM clans WHERE id = ?", (clan_id,))
+        await db.commit()
+
+
+async def get_clan_leader(clan_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT leader_id FROM clans WHERE id = ?", (clan_id,))
+        row = await cursor.fetchone()
+        return row[0] if row else None
 
 
 async def track_chat_member(user_id, chat_id, username=None, display_name=None):
