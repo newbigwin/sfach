@@ -26,7 +26,8 @@ from database import (
     resolve_bets, get_match_bets, add_quiz,
     get_all_known_users, get_known_users_count,
     check_match_exists,
-    get_bot_stats, get_tournament_analytics, get_match_stats
+    get_bot_stats, get_tournament_analytics, get_match_stats,
+    get_user_name
 )
 
 router = Router()
@@ -2778,9 +2779,11 @@ async def show_prize_places(callback_or_message, tournament_id, edit=False):
         place_label = {1: "1 место", 2: "2 место", 3: "3 место"}.get(place, f"{place} место")
         if place in assigned:
             p = assigned[place]
-            text += f"{place_label}: ID {p['user_id']}\n"
+            p_name = await get_user_name(p['user_id'])
+            p_link = f'<a href="tg://user?id={p["user_id"]}">{p_name}</a>'
+            text += f"{place_label}: {p_link}\n"
             kb_buttons.append([InlineKeyboardButton(
-                text=f"{place_label} — ID {p['user_id']}",
+                text=f"{place_label} — {p_name}",
                 callback_data=f"apz{tournament_id}x{place}"
             )])
         else:
@@ -2799,9 +2802,9 @@ async def show_prize_places(callback_or_message, tournament_id, edit=False):
     kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
 
     if edit and hasattr(callback_or_message, 'edit_text'):
-        await callback_or_message.edit_text(text, reply_markup=kb)
+        await callback_or_message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     else:
-        await callback_or_message.answer(text, reply_markup=kb)
+        await callback_or_message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("apz"))
@@ -2868,8 +2871,11 @@ async def select_prize_player(callback: CallbackQuery, bot: Bot):
         place_label = {1: "1 место", 2: "2 место", 3: "3 место"}.get(p, f"{p} место")
         if p in assigned:
             prize = assigned[p]
+            prize_name = await get_user_name(prize['user_id'])
+            prize_link = f'<a href="tg://user?id={prize["user_id"]}">{prize_name}</a>'
+            text += f"{place_label}: {prize_link}\n"
             kb_buttons.append([InlineKeyboardButton(
-                text=f"{place_label} — ID {prize['user_id']}",
+                text=f"{place_label} — {prize_name}",
                 callback_data=f"apz{tournament_id}x{p}"
             )])
         else:
@@ -2886,7 +2892,7 @@ async def select_prize_player(callback: CallbackQuery, bot: Bot):
     ])
 
     kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
-    await callback.message.edit_text(text, reply_markup=kb)
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     await callback.answer("Место назначено!")
 
 
@@ -3275,9 +3281,11 @@ async def admin_stats_menu(callback: CallbackQuery):
         if t_stats.get('top_winners'):
             text += "\nТоп победителей:\n"
             for i, w in enumerate(t_stats['top_winners'][:3], 1):
-                text += f"  {i}. ID {w['winner_id']} — {w['wins']} побед\n"
+                name = await get_user_name(w['winner_id'])
+                link = f'<a href="tg://user?id={w["winner_id"]}">{name}</a>'
+                text += f"  {i}. {link} — {w['wins']} побед\n"
 
-        await callback.message.answer(text)
+        await callback.message.answer(text, parse_mode="HTML")
     except Exception as e:
         await callback.message.answer(f"Ошибка при получении статистики: {e}")
     await callback.answer()

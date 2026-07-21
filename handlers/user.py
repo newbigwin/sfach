@@ -1101,11 +1101,14 @@ async def cmd_bet(message: Message):
     ok = await place_bet(message.from_user.id, match_id, bet_on, amount)
     if ok:
         coins = await get_user_coins(message.from_user.id)
+        bet_name = await get_user_name(bet_on)
+        bet_link = f'<a href="tg://user?id={bet_on}">{bet_name}</a>'
         await message.answer(
             f"Ставка принята!\n"
             f"Поставлено: {amount} монет\n"
-            f"На игрока ID {bet_on}\n"
-            f"Остаток: {coins['balance']} монет"
+            f"На игрока: {bet_link}\n"
+            f"Остаток: {coins['balance']} монет",
+            parse_mode="HTML"
         )
     else:
         await message.answer("Недостаточно монет или ошибка!")
@@ -1234,17 +1237,21 @@ async def cmd_tournament_stats(message: Message):
     if t_stats['top_winners']:
         text += "Победители турниров:\n"
         for i, w in enumerate(t_stats['top_winners'][:5], 1):
-            text += f"  {i}. ID {w['winner_id']} — {w['wins']} побед\n"
+            name = await get_user_name(w['winner_id'])
+            link = f'<a href="tg://user?id={w["winner_id"]}">{name}</a>'
+            text += f"  {i}. {link} — {w['wins']} побед\n"
 
     if m_stats['top_match_winners']:
         text += "\nПобедители матчей:\n"
         for i, w in enumerate(m_stats['top_match_winners'][:5], 1):
-            text += f"  {i}. ID {w['winner_id']} — {w['wins']} побед\n"
+            name = await get_user_name(w['winner_id'])
+            link = f'<a href="tg://user?id={w["winner_id"]}">{name}</a>'
+            text += f"  {i}. {link} — {w['wins']} побед\n"
 
     if not t_stats['top_winners'] and not m_stats['top_match_winners']:
         text += "Пока нет данных."
 
-    await message.answer(text)
+    await message.answer(text, parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("upf"))
@@ -1264,7 +1271,9 @@ async def user_profile(callback: CallbackQuery):
         cursor = await db.execute("SELECT * FROM achievements WHERE user_id = ?", (user_id,))
         achievements = await cursor.fetchall()
 
-    text = f"Профиль ID {user_id}:\n\n"
+    name = await get_user_name(user_id)
+    link = f'<a href="tg://user?id={user_id}">{name}</a>'
+    text = f"Профиль: {link}\n\n"
 
     if stats:
         text += (
