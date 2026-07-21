@@ -303,6 +303,7 @@ async def init_db():
             pass
         try:
             await db.execute("ALTER TABLE quizzes ADD COLUMN image TEXT")
+            await db.execute("ALTER TABLE clans ADD COLUMN image TEXT")
         except Exception:
             pass
         await db.commit()
@@ -974,12 +975,12 @@ async def get_match_stats():
         return {"top_match_winners": winners}
 
 
-async def create_clan(name, tag, chat_id, leader_id, description=""):
+async def create_clan(name, tag, chat_id, leader_id, description="", image=None):
     async with aiosqlite.connect(DB_NAME) as db:
         try:
             cursor = await db.execute(
-                "INSERT INTO clans (name, tag, chat_id, leader_id, description) VALUES (?, ?, ?, ?, ?)",
-                (name, tag, chat_id, leader_id, description)
+                "INSERT INTO clans (name, tag, chat_id, leader_id, description, image) VALUES (?, ?, ?, ?, ?, ?)",
+                (name, tag, chat_id, leader_id, description, image)
             )
             clan_id = cursor.lastrowid
             await db.execute(
@@ -997,6 +998,12 @@ async def get_clan(clan_id):
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("SELECT * FROM clans WHERE id = ?", (clan_id,))
         return await cursor.fetchone()
+
+
+async def update_clan_image(clan_id, image):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE clans SET image = ? WHERE id = ?", (image, clan_id))
+        await db.commit()
 
 
 async def get_user_clan(user_id, chat_id):

@@ -2672,7 +2672,8 @@ async def set_winner_handler(callback: CallbackQuery, bot: Bot):
     total_pool, num_winners, share = await resolve_bets(match_id, winner_id)
 
     match = await get_match(match_id)
-    participants = await get_tournament_participants(match['tournament_id'])
+    tournament_id = match['tournament_id']
+    participants = await get_tournament_participants(tournament_id)
 
     winner = next((p for p in participants if p['user_id'] == winner_id), None)
     winner_name = winner['display_name'] or winner['username'] or str(winner_id)
@@ -2685,6 +2686,18 @@ async def set_winner_handler(callback: CallbackQuery, bot: Bot):
 
     await callback.message.edit_text(result_text, parse_mode="HTML")
     await callback.answer()
+
+    all_matches = await get_tournament_matches(tournament_id)
+    unfinished = [m for m in all_matches if m['status'] != 'finished']
+    if not unfinished:
+        tournament = await get_tournament(tournament_id)
+        try:
+            await bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"Все бои турнира \"{tournament['name']}\" завершены!"
+            )
+        except Exception:
+            pass
 
 
 @router.callback_query(F.data.startswith("match_list_"))

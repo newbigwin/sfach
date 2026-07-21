@@ -143,20 +143,32 @@ async def leaderboard_cmd(message: Message):
 
     for i, p in enumerate(players):
         medal = medals[i] if i < 3 else f"{i+1}."
-        text += f"{medal} {p['user_id']} — ELO: {p['elo']} (W:{p['wins']} L:{p['losses']})\n"
+        name = await get_user_name(p['user_id'])
+        link = f'<a href="tg://user?id={p["user_id"]}">{name}</a>'
+        text += f"{medal} {link} — ELO: {p['elo']} (W:{p['wins']} L:{p['losses']})\n"
 
-    await message.answer(text)
+    await message.answer(text, parse_mode="HTML")
 
 
 class CreateClan(StatesGroup):
     name = State()
     tag = State()
     description = State()
+    image = State()
     confirm = State()
 
 
 class BetState(StatesGroup):
     amount = State()
+
+
+@router.message(Command("cancel"))
+async def cancel_cmd(message: Message, state: FSMContext):
+    current = await state.get_state()
+    if current is None:
+        return
+    await state.clear()
+    await message.answer("Действие отменено.")
 
 
 @router.message(Command("clans"))
@@ -165,7 +177,7 @@ async def clans_cmd(message: Message):
     if message.chat.type != "private" and str(message.chat.id) != str(configured):
         return
 
-    chat_id = message.chat.id
+    chat_id = configured
     clans = await get_clans(chat_id)
 
     if not clans:
@@ -175,13 +187,15 @@ async def clans_cmd(message: Message):
     text = "Кланы:\n\n"
     for c in clans:
         count = await get_clan_member_count(c['id'])
-        text += f"[{c['tag']}] {c['name']} — ELO: {c['elo']} ({count} чел.)\n"
+        leader_name = await get_user_name(c['leader_id'])
+        leader_link = f'<a href="tg://user?id={c["leader_id"]}">{leader_name}</a>'
+        text += f"[{c['tag']}] {c['name']} — ELO: {c['elo']} ({count} чел.) Лидер: {leader_link}\n"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Мой клан", callback_data="my_clan")],
         [InlineKeyboardButton(text="Создать клан", callback_data="create_clan_start")],
     ])
-    await message.answer(text, reply_markup=kb)
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 @router.message(Command("clan"))
@@ -212,16 +226,17 @@ async def clan_cmd(message: Message):
 
     for m in members:
         role = " " if m['role'] == 'leader' else " "
-        name = str(m['user_id'])
-        text += f"  {role} {name} (ELO: {m['elo'] or 1000})\n"
+        name = await get_user_name(m['user_id'])
+        link = f'<a href="tg://user?id={m["user_id"]}">{name}</a>'
+        text += f"  {role} {link} (ELO: {m['elo'] or 1000})\n"
 
-    await message.answer(text)
+    await message.answer(text, parse_mode="HTML")
 
 
 @router.callback_query(F.data == "my_clan")
 async def my_clan_callback(callback: CallbackQuery):
     user_id = callback.from_user.id
-    chat_id = callback.message.chat.id
+    chat_id = await get_chat_id()
 
     clan = await get_user_clan(user_id, chat_id)
     if not clan:
@@ -241,13 +256,17 @@ async def my_clan_callback(callback: CallbackQuery):
 
     for m in members:
         role = " " if m['role'] == 'leader' else " "
-        name = str(m['user_id'])
-        text += f"  {role} {name}\n"
+        name = await get_user_name(m['user_id'])
+        link = f'<a href="tg://user?id={m["user_id"]}">{name}</a>'
+        text += f"  {role} {link}\n"
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Покинуть клан", callback_data="leave_clan_confirm")]
     ])
-    await callback.message.answer(text, reply_markup=kb)
+    if clan['image']:
+        await callback.message.answer_photo(photo=clan['image'], caption=text, reply_markup=kb, parse_mode="HTML")
+    else:
+        await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
 
 
@@ -271,9 +290,15 @@ async def clan_info_callback(callback: CallbackQuery):
         f"Участники:\n"
     )
     for m in members:
-        text += f"  {m['display_name'] or m['username'] or str(m['user_id'])} ({m['role']})\n"
+        role = " " if m['role'] == 'leader' else " "
+        name = await get_user_name(m['user_id'])
+        link = f'<a href="tg://user?id={m["user_id"]}">{name}</a>'
+        text += f"  {role} {link} (ELO: {m['elo'] or 1000})\n"
 
-    await callback.message.answer(text)
+    if clan['image']:
+        await callback.message.answer_photo(photo=clan['image'], caption=text, parse_mode="HTML")
+    else:
+        await callback.message.answer(text, parse_mode="HTML")
     await callback.answer()
 
 
@@ -307,6 +332,20 @@ async def clan_tag(message: Message, state: FSMContext):
 async def clan_desc(message: Message, state: FSMContext):
     desc = message.text if message.text.lower() != "пропустить" else ""
     await state.update_data(description=desc)
+    await message.answer("Отправьте фото клана (или 'пропустить'):")
+    await state.set_state(CreateClan.image)
+
+
+@router.message(CreateClan.image)
+async def clan_image(message: Message, state: FSMContext):
+    if message.photo:
+        image = message.photo[-1].file_id
+    elif message.text and message.text.lower() == "пропустить":
+        image = None
+    else:
+        await message.answer("Отправьте фото или 'пропустить':")
+        return
+    await state.update_data(image=image)
 
     data = await state.get_data()
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -348,7 +387,8 @@ async def confirm_clan(callback: CallbackQuery, state: FSMContext):
         tag=data['tag'],
         chat_id=chat_id,
         leader_id=user_id,
-        description=data['description']
+        description=data['description'],
+        image=data.get('image')
     )
 
     if clan_id:
