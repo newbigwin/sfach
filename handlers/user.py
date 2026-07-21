@@ -311,7 +311,8 @@ async def create_clan_start(callback: CallbackQuery, state: FSMContext):
 
 @router.message(CreateClan.name)
 async def clan_name(message: Message, state: FSMContext):
-    from aiogram.fsm.context import FSMContext
+    if message.text and message.text.startswith("/"):
+        return
     await state.update_data(name=message.text)
     await message.answer("Введите тег клана (2-5 символов, например [SF]):")
     await state.set_state(CreateClan.tag)
@@ -319,6 +320,8 @@ async def clan_name(message: Message, state: FSMContext):
 
 @router.message(CreateClan.tag)
 async def clan_tag(message: Message, state: FSMContext):
+    if message.text and message.text.startswith("/"):
+        return
     tag = message.text.strip("[] ")
     if len(tag) < 2 or len(tag) > 5:
         await message.answer("Тег должен быть 2-5 символов:")
@@ -330,6 +333,8 @@ async def clan_tag(message: Message, state: FSMContext):
 
 @router.message(CreateClan.description)
 async def clan_desc(message: Message, state: FSMContext):
+    if message.text and message.text.startswith("/"):
+        return
     desc = message.text if message.text.lower() != "пропустить" else ""
     await state.update_data(description=desc)
     await message.answer("Отправьте фото клана (или 'пропустить'):")
@@ -338,6 +343,8 @@ async def clan_desc(message: Message, state: FSMContext):
 
 @router.message(CreateClan.image)
 async def clan_image(message: Message, state: FSMContext):
+    if message.text and message.text.startswith("/"):
+        return
     if message.photo:
         image = message.photo[-1].file_id
     elif message.text and message.text.lower() == "пропустить":
