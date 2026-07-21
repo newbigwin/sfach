@@ -5,6 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from config import ADMIN_ID
+from handlers.admin import is_admin
 from database import (
     get_events, get_active_polls, get_poll, vote, get_poll_results,
     get_active_tournaments, get_tournament, join_tournament, leave_tournament,
