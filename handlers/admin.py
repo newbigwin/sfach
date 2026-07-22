@@ -829,14 +829,15 @@ async def admin_manual(callback: CallbackQuery):
         "/daily — ежедневный бонус +50\n"
         "/balance — баланс монет\n"
         "/coins — помощь по монетам\n"
-        "/coins_top — топ богачей\n\n"
+        "/coins_top — топ богачей\n"
+        "Ставки на матчи — кнопки в сообщениях о поединках\n\n"
 
         "АДМИН-КОМАНДЫ\n"
         "/admin — панель администратора\n"
         "/setchat — настроить чат для публикаций\n"
         "/grant_clan — выдать разрешение на клан\n"
-        "/addcoins — добавить монеты (ответом)\n"
-        "/removecoins — снять монеты (ответом)\n"
+        "/addcoins — добавить монеты (ответом на сообщение)\n"
+        "/removecoins — снять монеты (ответом на сообщение)\n"
         "/history — история баланса (ответом)\n"
         "/backup — бэкап БД\n"
         "/restore — восстановить БД\n\n"
@@ -844,7 +845,7 @@ async def admin_manual(callback: CallbackQuery):
         "АДМИН: ПАНЕЛЬ\n"
         "События — создание и управление событиями с фото\n"
         "Голосования — опросы с вариантами и фото\n"
-        "Турниры — создание, сетка, поединки, ELO\n"
+        "Турниры — создание, сетка, поединки, ELO, монетная награда\n"
         "Напоминания — отложенные и повторяющиеся\n"
         "Викторины — добавление вопросов\n"
         "Рассылка — сообщения всем пользователям\n"
@@ -3017,7 +3018,11 @@ async def announce_results_handler(callback: CallbackQuery, bot: Bot):
     prize_coins = tournament['prize_coins'] or 0
     if prize_coins > 0:
         from database import add_coins
-        coin_rewards = {1: prize_coins, 2: prize_coins // 2, 3: prize_coins // 4}
+        coin_rewards = {
+            1: int(prize_coins),
+            2: max(0, int(prize_coins // 2)),
+            3: max(0, int(prize_coins // 4))
+        }
         if prizes:
             for prize in prizes:
                 coins = coin_rewards.get(prize['place'], 0)
