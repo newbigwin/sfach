@@ -56,6 +56,7 @@ class CreateTournament(StatesGroup):
     description = State()
     max_participants = State()
     prize_places = State()
+    prize_coins = State()
     image = State()
     confirm = State()
     editing = State()
@@ -834,6 +835,8 @@ async def admin_manual(callback: CallbackQuery):
         "/admin — панель администратора\n"
         "/setchat — настроить чат для публикаций\n"
         "/grant_clan — выдать разрешение на клан\n"
+        "/addcoins — добавить монеты (ответом)\n"
+        "/removecoins — снять монеты (ответом)\n"
         "/history — история баланса (ответом)\n"
         "/backup — бэкап БД\n"
         "/restore — восстановить БД\n\n"
@@ -1995,12 +1998,9 @@ async def tournament_prize_places(callback: CallbackQuery, state: FSMContext):
     await state.update_data(prize_places=prize_places, participation_award=0)
 
     await callback.message.answer(
-        "Отправьте изображение для поста или нажмите 'Пропустить':",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Пропустить", callback_data="skip_tourney_image")]
-        ])
+        "Введите награду в монетах за 1 место (или 0 если без монет):"
     )
-    await state.set_state(CreateTournament.image)
+    await state.set_state(CreateTournament.prize_coins)
     await callback.answer()
 
 
@@ -2019,6 +2019,28 @@ async def tournament_prize_places_text(message: Message, state: FSMContext):
         return
 
     await state.update_data(prize_places=prize_places, participation_award=0)
+
+    await message.answer(
+        "Введите награду в монетах за 1 место (или 0 если без монет):"
+    )
+    await state.set_state(CreateTournament.prize_coins)
+
+
+@router.message(CreateTournament.prize_coins)
+async def tournament_prize_coins(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    try:
+        prize_coins = int(message.text)
+        if prize_coins < 0:
+            await message.answer("Введите число >= 0:")
+            return
+    except ValueError:
+        await message.answer("Введите число:")
+        return
+
+    await state.update_data(prize_coins=prize_coins)
 
     await message.answer(
         "Отправьте изображение для поста или нажмите 'Пропустить':",
@@ -2075,6 +2097,7 @@ async def show_tournament_preview(message_or_callback, state: FSMContext):
         f"Описание: {data['description']}\n"
         f"Макс. участников: {data['max_participants']}\n"
         f"Призовых мест: {data.get('prize_places', 1)}\n"
+        f"Награда за 1 место: {data.get('prize_coins', 0)} монет\n"
         f"Изображение: {'да' if data.get('image_file_id') else 'нет'}\n\n"
         f"Нажмите 'Опубликовать' или отредактируйте."
     )
@@ -2225,7 +2248,8 @@ async def confirm_tournament(callback: CallbackQuery, state: FSMContext, bot: Bo
         chat_id=chat_id,
         image_file_id=data.get('image_file_id'),
         prize_places=data.get('prize_places', 1),
-        participation_award=data.get('participation_award', 0)
+        participation_award=data.get('participation_award', 0),
+        prize_coins=data.get('prize_coins', 0)
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -2234,10 +2258,13 @@ async def confirm_tournament(callback: CallbackQuery, state: FSMContext, bot: Bo
 
     prize_text = ""
     prize_places = data.get('prize_places', 1)
+    prize_coins = data.get('prize_coins', 0)
     if prize_places == 1:
         prize_text = "Приз: победитель"
     else:
         prize_text = f"Призовых мест: {prize_places}"
+    if prize_coins > 0:
+        prize_text += f"\nНаграда за 1 место: {prize_coins} монет"
 
     text = (
         f"{data['name']}\n\n"
@@ -2986,6 +3013,24 @@ async def announce_results_handler(callback: CallbackQuery, bot: Bot):
         for a in set(all_awarded):
             if a in ACHIEVEMENTS:
                 text += f"  {ACHIEVEMENTS[a][0]}\n"
+
+    prize_coins = tournament['prize_coins'] or 0
+    if prize_coins > 0:
+        from database import add_coins
+        coin_rewards = {1: prize_coins, 2: prize_coins // 2, 3: prize_coins // 4}
+        if prizes:
+            for prize in prizes:
+                coins = coin_rewards.get(prize['place'], 0)
+                if coins > 0:
+                    await add_coins(prize['user_id'], coins, f"Турнир: {tournament['name']} ({prize['place']} место)")
+                    name = await get_user_name(prize['user_id'])
+                    text += f'  {prize["place"]} место: <a href="tg://user?id={prize["user_id"]}">{name}</a> +{coins} монет\n'
+        elif standings:
+            coins = coin_rewards.get(1, 0)
+            if coins > 0:
+                await add_coins(standings[0]['user_id'], coins, f"Турнир: {tournament['name']} (1 место)")
+                name = await get_user_name(standings[0]['user_id'])
+                text += f'  Победитель: <a href="tg://user?id={standings[0]["user_id"]}">{name}</a> +{coins} монет\n'
 
     await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
     await callback.answer("Готово!", show_alert=True)

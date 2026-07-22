@@ -524,6 +524,73 @@ async def grant_clan_cmd(message: Message):
     await message.answer(f"Разрешение на создание клана выдано: {link}", parse_mode="HTML")
 
 
+@router.message(Command("addcoins"))
+async def addcoins_cmd(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    if not message.reply_to_message or not message.reply_to_message.from_user:
+        await message.answer("Ответьте на сообщение пользователя командой /addcoins <сумма>")
+        return
+
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("Укажите сумму: /addcoins 100")
+        return
+
+    try:
+        amount = int(args[1])
+        if amount <= 0:
+            await message.answer("Сумма должна быть > 0")
+            return
+    except ValueError:
+        await message.answer("Неверная сумма.")
+        return
+
+    target_id = message.reply_to_message.from_user.id
+    from database import add_coins
+    await add_coins(target_id, amount, f"Выдано админом {message.from_user.id}")
+
+    name = await get_user_name(target_id)
+    link = f'<a href="tg://user?id={target_id}">{name}</a>'
+    await message.answer(f"+{amount} монет → {link}", parse_mode="HTML")
+
+
+@router.message(Command("removecoins"))
+async def removecoins_cmd(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    if not message.reply_to_message or not message.reply_to_message.from_user:
+        await message.answer("Ответьте на сообщение пользователя командой /removecoins <сумма>")
+        return
+
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("Укажите сумму: /removecoins 100")
+        return
+
+    try:
+        amount = int(args[1])
+        if amount <= 0:
+            await message.answer("Сумма должна быть > 0")
+            return
+    except ValueError:
+        await message.answer("Неверная сумма.")
+        return
+
+    target_id = message.reply_to_message.from_user.id
+    from database import remove_coins
+    ok = await remove_coins(target_id, amount, f"Списано админом {message.from_user.id}")
+
+    name = await get_user_name(target_id)
+    link = f'<a href="tg://user?id={target_id}">{name}</a>'
+    if ok:
+        await message.answer(f"-{amount} монет → {link}", parse_mode="HTML")
+    else:
+        await message.answer("Недостаточно монет у пользователя.")
+
+
 @router.message(Command("clan_delete"))
 async def clan_delete_cmd(message: Message):
     configured = await get_chat_id()

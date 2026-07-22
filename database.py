@@ -304,6 +304,7 @@ async def init_db():
         try:
             await db.execute("ALTER TABLE quizzes ADD COLUMN image TEXT")
             await db.execute("ALTER TABLE clans ADD COLUMN image TEXT")
+            await db.execute("ALTER TABLE tournaments ADD COLUMN prize_coins INTEGER DEFAULT 0")
         except Exception:
             pass
         await db.commit()
@@ -1285,11 +1286,11 @@ async def close_poll(poll_id):
         await db.commit()
 
 
-async def create_tournament(name, description, max_participants, created_by, chat_id, image_file_id=None, prize_places=1, participation_award=0):
+async def create_tournament(name, description, max_participants, created_by, chat_id, image_file_id=None, prize_places=1, participation_award=0, prize_coins=0):
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute(
-            "INSERT INTO tournaments (name, description, max_participants, created_by, chat_id, image_file_id, prize_places, participation_award) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (name, description, max_participants, created_by, chat_id, image_file_id, prize_places, participation_award)
+            "INSERT INTO tournaments (name, description, max_participants, created_by, chat_id, image_file_id, prize_places, participation_award, prize_coins) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (name, description, max_participants, created_by, chat_id, image_file_id, prize_places, participation_award, prize_coins)
         )
         await db.commit()
         return cursor.lastrowid
