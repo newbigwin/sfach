@@ -305,6 +305,8 @@ async def init_db():
             await db.execute("ALTER TABLE quizzes ADD COLUMN image TEXT")
             await db.execute("ALTER TABLE clans ADD COLUMN image TEXT")
             await db.execute("ALTER TABLE tournaments ADD COLUMN prize_coins INTEGER DEFAULT 0")
+            await db.execute("ALTER TABLE matches ADD COLUMN screenshot1 TEXT")
+            await db.execute("ALTER TABLE matches ADD COLUMN screenshot2 TEXT")
         except Exception:
             pass
         await db.commit()
@@ -1474,6 +1476,23 @@ async def get_tournament_matches(tournament_id):
             (tournament_id,)
         )
         return await cursor.fetchall()
+
+
+async def save_match_screenshot(match_id, player_id, file_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT player1_id, player2_id FROM matches WHERE id = ?", (match_id,))
+        match = await cursor.fetchone()
+        if not match:
+            return False
+        if player_id == match['player1_id']:
+            await db.execute("UPDATE matches SET screenshot1 = ? WHERE id = ?", (file_id, match_id))
+        elif player_id == match['player2_id']:
+            await db.execute("UPDATE matches SET screenshot2 = ? WHERE id = ?", (file_id, match_id))
+        else:
+            return False
+        await db.commit()
+        return True
 
 
 async def set_match_winner(match_id, winner_id):

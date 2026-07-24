@@ -166,6 +166,10 @@ class BetState(StatesGroup):
     amount = State()
 
 
+class MatchScreenshot(StatesGroup):
+    waiting = State()
+
+
 @router.message(Command("cancel"))
 async def cancel_cmd(message: Message, state: FSMContext):
     current = await state.get_state()
@@ -1042,7 +1046,110 @@ async def confirm_challenge(callback: CallbackQuery, bot: Bot):
         parse_mode="HTML"
     )
 
+    screenshot_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Отправить скриншот", callback_data=f"send_screenshot_{match_id}")]
+    ])
+
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text=f"Поединок создан! Сыграйте матч и отправьте скриншот результата.\n\n{my_link} vs {opp_link}\n\nТурнир: {tournament_name}",
+            reply_markup=screenshot_kb,
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+    try:
+        await bot.send_message(
+            chat_id=opponent_id,
+            text=f"Вы вызваны на бой! Сыграйте матч и отправьте скриншот результата.\n\n{my_link} vs {opp_link}\n\nТурнир: {tournament_name}",
+            reply_markup=screenshot_kb,
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
     await callback.answer("Поединок создан!", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("send_screenshot_"))
+async def send_screenshot_start(callback: CallbackQuery, state: FSMContext):
+    match_id = int(callback.data.split("_")[2])
+    user_id = callback.from_user.id
+
+    from database import get_match
+    match = await get_match(match_id)
+    if not match:
+        await callback.answer("Матч не найден!", show_alert=True)
+        return
+
+    if user_id != match['player1_id'] and user_id != match['player2_id']:
+        await callback.answer("Вы не участник этого матча!", show_alert=True)
+        return
+
+    if user_id == match['player1_id'] and match['screenshot1']:
+        await callback.answer("Вы уже отправили скриншот!", show_alert=True)
+        return
+
+    if user_id == match['player2_id'] and match['screenshot2']:
+        await callback.answer("Вы уже отправили скриншот!", show_alert=True)
+        return
+
+    await state.update_data(match_id=match_id)
+    await state.set_state(MatchScreenshot.waiting)
+    await callback.message.answer("Отправьте скриншот результата матча (одно фото):")
+    await callback.answer()
+
+
+@router.message(MatchScreenshot.waiting, F.photo)
+async def receive_screenshot(message: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    match_id = data['match_id']
+    user_id = message.from_user.id
+    file_id = message.photo[-1].file_id
+
+    from database import save_match_screenshot, get_match, get_tournament, get_user_name
+    ok = await save_match_screenshot(match_id, user_id, file_id)
+    if not ok:
+        await message.answer("Ошибка при сохранении скриншота.")
+        await state.clear()
+        return
+
+    match = await get_match(match_id)
+    tournament = await get_tournament(match['tournament_id'])
+
+    p1_name = await get_user_name(match['player1_id'])
+    p2_name = await get_user_name(match['player2_id'])
+    p1_link = f'<a href="tg://user?id={match["player1_id"]}">{p1_name}</a>'
+    p2_link = f'<a href="tg://user?id={match["player2_id"]}">{p2_name}</a>'
+    sender_name = await get_user_name(user_id)
+    sender_link = f'<a href="tg://user?id={user_id}">{sender_name}</a>'
+
+    caption = (
+        f"Скриншот матча!\n\n"
+        f"{p1_link} vs {p2_link}\n"
+        f"Турнир: {tournament['name']}\n\n"
+        f"Отправил: {sender_link}"
+    )
+
+    try:
+        await bot.send_photo(
+            chat_id=ADMIN_ID,
+            photo=file_id,
+            caption=caption,
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+    await message.answer("Скриншот отправлен администратору!")
+    await state.clear()
+
+
+@router.message(MatchScreenshot.waiting)
+async def receive_screenshot_wrong(message: Message):
+    await message.answer("Отправьте именно одно фото (скриншот):")
 
 
 @router.callback_query(F.data.startswith("user_standings_"))

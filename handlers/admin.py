@@ -2669,6 +2669,30 @@ async def confirm_match(callback: CallbackQuery, state: FSMContext, bot: Bot):
         parse_mode="HTML"
     )
 
+    screenshot_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Отправить скриншот", callback_data=f"send_screenshot_{match_id}")]
+    ])
+
+    try:
+        await bot.send_message(
+            chat_id=data['player1_id'],
+            text=f"Создан поединок! Сыграйте матч и отправьте скриншот результата.\n\n{p1_link} vs {p2_link}",
+            reply_markup=screenshot_kb,
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+    try:
+        await bot.send_message(
+            chat_id=data['player2_id'],
+            text=f"Создан поединок! Сыграйте матч и отправьте скриншот результата.\n\n{p1_link} vs {p2_link}",
+            reply_markup=screenshot_kb,
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
     await state.clear()
     await callback.answer("Опубликовано!", show_alert=True)
     await callback.message.delete()
