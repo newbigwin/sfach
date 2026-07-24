@@ -1029,6 +1029,7 @@ async def confirm_challenge(callback: CallbackQuery, bot: Bot):
             [InlineKeyboardButton(text=f"{opp_name} победил", callback_data=f"set_winner_{match_id}_{opponent_id}")],
             [InlineKeyboardButton(text=f"Ставка на {my_name}", callback_data=f"betch_{match_id}_{user_id}")],
             [InlineKeyboardButton(text=f"Ставка на {opp_name}", callback_data=f"betch_{match_id}_{opponent_id}")],
+            [InlineKeyboardButton(text="Отправить скриншот", callback_data=f"send_screenshot_{match_id}")],
         ])
 
         await bot.send_message(
@@ -1046,35 +1047,11 @@ async def confirm_challenge(callback: CallbackQuery, bot: Bot):
         parse_mode="HTML"
     )
 
-    screenshot_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Отправить скриншот", callback_data=f"send_screenshot_{match_id}")]
-    ])
-
-    try:
-        await bot.send_message(
-            chat_id=user_id,
-            text=f"Поединок создан! Сыграйте матч и отправьте скриншот результата.\n\n{my_link} vs {opp_link}\n\nТурнир: {tournament_name}",
-            reply_markup=screenshot_kb,
-            parse_mode="HTML"
-        )
-    except Exception:
-        pass
-
-    try:
-        await bot.send_message(
-            chat_id=opponent_id,
-            text=f"Вы вызваны на бой! Сыграйте матч и отправьте скриншот результата.\n\n{my_link} vs {opp_link}\n\nТурнир: {tournament_name}",
-            reply_markup=screenshot_kb,
-            parse_mode="HTML"
-        )
-    except Exception:
-        pass
-
     await callback.answer("Поединок создан!", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("send_screenshot_"))
-async def send_screenshot_start(callback: CallbackQuery, state: FSMContext):
+async def send_screenshot_start(callback: CallbackQuery, state: FSMContext, bot: Bot):
     match_id = int(callback.data.split("_")[2])
     user_id = callback.from_user.id
 
@@ -1098,8 +1075,15 @@ async def send_screenshot_start(callback: CallbackQuery, state: FSMContext):
 
     await state.update_data(match_id=match_id)
     await state.set_state(MatchScreenshot.waiting)
-    await callback.message.answer("Отправьте скриншот результата матча (одно фото):")
-    await callback.answer()
+
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text="Отправьте скриншот результата матча (одно фото):"
+        )
+        await callback.answer()
+    except Exception:
+        await callback.answer("Начните диалог с ботом, чтобы отправить скриншот!", show_alert=True)
 
 
 @router.message(MatchScreenshot.waiting, F.photo)

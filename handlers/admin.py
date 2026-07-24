@@ -2660,6 +2660,7 @@ async def confirm_match(callback: CallbackQuery, state: FSMContext, bot: Bot):
         [InlineKeyboardButton(text=f"{p2_name} победил", callback_data=f"set_winner_{match_id}_{data['player2_id']}")],
         [InlineKeyboardButton(text=f"Ставка на {p1_name}", callback_data=f"betch_{match_id}_{data['player1_id']}")],
         [InlineKeyboardButton(text=f"Ставка на {p2_name}", callback_data=f"betch_{match_id}_{data['player2_id']}")],
+        [InlineKeyboardButton(text="Отправить скриншот", callback_data=f"send_screenshot_{match_id}")],
     ])
 
     await bot.send_message(
@@ -2668,30 +2669,6 @@ async def confirm_match(callback: CallbackQuery, state: FSMContext, bot: Bot):
         reply_markup=kb,
         parse_mode="HTML"
     )
-
-    screenshot_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Отправить скриншот", callback_data=f"send_screenshot_{match_id}")]
-    ])
-
-    try:
-        await bot.send_message(
-            chat_id=data['player1_id'],
-            text=f"Создан поединок! Сыграйте матч и отправьте скриншот результата.\n\n{p1_link} vs {p2_link}",
-            reply_markup=screenshot_kb,
-            parse_mode="HTML"
-        )
-    except Exception:
-        pass
-
-    try:
-        await bot.send_message(
-            chat_id=data['player2_id'],
-            text=f"Создан поединок! Сыграйте матч и отправьте скриншот результата.\n\n{p1_link} vs {p2_link}",
-            reply_markup=screenshot_kb,
-            parse_mode="HTML"
-        )
-    except Exception:
-        pass
 
     await state.clear()
     await callback.answer("Опубликовано!", show_alert=True)
