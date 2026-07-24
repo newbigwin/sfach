@@ -1051,7 +1051,7 @@ async def confirm_challenge(callback: CallbackQuery, bot: Bot):
 
 
 @router.callback_query(F.data.startswith("send_screenshot_"))
-async def send_screenshot_start(callback: CallbackQuery, state: FSMContext, bot: Bot):
+async def send_screenshot_start(callback: CallbackQuery, state: FSMContext):
     match_id = int(callback.data.split("_")[2])
     user_id = callback.from_user.id
 
@@ -1073,17 +1073,13 @@ async def send_screenshot_start(callback: CallbackQuery, state: FSMContext, bot:
         await callback.answer("Вы уже отправили скриншот!", show_alert=True)
         return
 
-    await state.update_data(match_id=match_id)
+    name = await get_user_name(user_id)
+    msg = await callback.message.answer(
+        f"{name}, ответьте на это сообщение с скриншотом результата"
+    )
+    await state.update_data(match_id=match_id, prompt_msg_id=msg.message_id)
     await state.set_state(MatchScreenshot.waiting)
-
-    try:
-        await bot.send_message(
-            chat_id=user_id,
-            text="Отправьте скриншот результата матча (одно фото):"
-        )
-        await callback.answer()
-    except Exception:
-        await callback.answer("Начните диалог с ботом, чтобы отправить скриншот!", show_alert=True)
+    await callback.answer()
 
 
 @router.message(MatchScreenshot.waiting, F.photo)
@@ -1091,6 +1087,11 @@ async def receive_screenshot(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     match_id = data['match_id']
     user_id = message.from_user.id
+
+    if not message.reply_to_message or message.reply_to_message.message_id != data.get('prompt_msg_id'):
+        await message.answer("Ответьте на сообщение бота со скриншотом!")
+        return
+
     file_id = message.photo[-1].file_id
 
     from database import save_match_screenshot, get_match, get_tournament, get_user_name
@@ -1133,7 +1134,7 @@ async def receive_screenshot(message: Message, state: FSMContext, bot: Bot):
 
 @router.message(MatchScreenshot.waiting)
 async def receive_screenshot_wrong(message: Message):
-    await message.answer("Отправьте именно одно фото (скриншот):")
+    await message.answer("Ответьте на сообщение бота с скриншотом (фото)!")
 
 
 @router.callback_query(F.data.startswith("user_standings_"))
